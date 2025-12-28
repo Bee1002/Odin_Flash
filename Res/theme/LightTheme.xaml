@@ -1,0 +1,16 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Simple theme without MaterialDesign -->
+    <SolidColorBrush x:Key="PrimaryHueDarkBrush" Color="#263238"/>
+    <SolidColorBrush x:Key="PrimaryHueDarkForegroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="PrimaryHueLightBrush" Color="#263238"/>
+    <SolidColorBrush x:Key="PrimaryHueLightForegroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="PrimaryHueMidBrush" Color="#263238"/>
+    <SolidColorBrush x:Key="PrimaryHueMidForegroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="SecondaryHueLightBrush" Color="#2e8276"/>
+    <SolidColorBrush x:Key="SecondaryHueLightForegroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="SecondaryHueDarkBrush" Color="#2e8276"/>
+    <SolidColorBrush x:Key="SecondaryHueDarkForegroundBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="TabColorBrush" Color="#263238"/>
+    <SolidColorBrush x:Key="TabColorForegroundBrush" Color="#FFFFFF"/>
+</ResourceDictionary>
