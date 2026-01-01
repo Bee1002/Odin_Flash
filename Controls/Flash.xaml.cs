@@ -1,4 +1,5 @@
 using Odin_Flash.Util;
+using Odin_Flash.Class;
 using Microsoft.Win32;
 using SharpOdinClient;
 using System;
@@ -30,6 +31,7 @@ namespace Odin_Flash.Controls
         public FlashField CPPackage = new FlashField("CP (Modem) file package [tar,md5]");
         public FlashField CSCPackage = new FlashField("CSC file package [tar,md5]");
         public Odin Odin = new Odin();
+        public OdinEngine OdinEngine; // Motor de protocolo Odin basado en análisis original
 
         public event ProgressChangedDelegate ProgressChanged;
         public event LogDelegate Log;
@@ -53,6 +55,18 @@ namespace Odin_Flash.Controls
             Odin.Log += Odin_Log;
             Odin.ProgressChanged += Odin_ProgressChanged;
 
+            // Inicializar OdinEngine con la instancia de Odin
+            OdinEngine = new OdinEngine(Odin);
+            OdinEngine.Log += OdinEngine_Log;
+
+        }
+
+        /// <summary>
+        /// Maneja los logs de OdinEngine y los redirige al sistema de logging existente
+        /// </summary>
+        private void OdinEngine_Log(string Text, MsgType Color, bool IsError = false)
+        {
+            Log?.Invoke(Text, Color, IsError);
         }
 
 
