@@ -1,7 +1,6 @@
 using Odin_Flash.Util;
+using Odin_Flash.Class;
 using Microsoft.Win32;
-using SharpOdinClient;
-using SharpOdinClient.util;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -54,7 +53,7 @@ namespace Odin_Flash.Controls
             view.Refresh();
         }
 
-        public bool Exist(cListFileData File)
+        public bool Exist(dynamic File)
         {
             foreach (var item in FlashFile)
             {
@@ -66,7 +65,7 @@ namespace Odin_Flash.Controls
             return false;
         }
         public event PitDetectDelegate PitDetect;
-        private void BtnChooseFile_Click(object sender, RoutedEventArgs e)
+        private async void BtnChooseFile_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
             {
@@ -78,13 +77,15 @@ namespace Odin_Flash.Controls
             {
                 BtnClear_Click(sender, e);
                 string filename = dlg.FileName;
-                var odin = new Odin();
-                var item = odin.tar.TarInformation(filename);
+                // Usar TarProcessor para procesar archivos .tar
+                var item = await Odin_Flash.Class.TarProcessor.GetTarFileListAsync(filename);
                 if (item.Count > 0)
                 {
                     foreach (var Tiem in item)
                     {
-                        if (!Exist(Tiem))
+                        // Crear estructura compatible
+                        var fileData = new { Filename = Tiem.Filename, Filesize = Tiem.Size };
+                        if (!Exist(fileData))
                         {
                             var Extension = System.IO.Path.GetExtension(Tiem.Filename);
                             var file = new FileFlash
@@ -101,11 +102,14 @@ namespace Odin_Flash.Controls
                             }
                             else if (Extension == ".lz4")
                             {
-                                file.RawSize = odin.CalculateLz4SizeFromTar(filename, Tiem.Filename);
+                                // Para .lz4, necesitamos calcular el tamaño descomprimido
+                                // Por ahora usamos el tamaño del archivo comprimido
+                                // TODO: Implementar cálculo de tamaño LZ4 si es necesario
+                                file.RawSize = Tiem.Size;
                             }
                             else
                             {
-                                file.RawSize = Tiem.Filesize;
+                                file.RawSize = Tiem.Size;
                             }
                             FlashFile.Add(file);
                         }

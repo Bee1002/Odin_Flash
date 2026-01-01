@@ -1,7 +1,6 @@
 using Odin_Flash.Util;
 using Odin_Flash.Class;
 using Microsoft.Win32;
-using SharpOdinClient;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -17,7 +16,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
-using static SharpOdinClient.util.utils;
 
 namespace Odin_Flash.Controls
 {
@@ -30,11 +28,10 @@ namespace Odin_Flash.Controls
         public FlashField APPackage = new FlashField("AP (PDA) file package [tar,md5]");
         public FlashField CPPackage = new FlashField("CP (Modem) file package [tar,md5]");
         public FlashField CSCPackage = new FlashField("CSC file package [tar,md5]");
-        public Odin Odin = new Odin();
         public OdinEngine OdinEngine; // Motor de protocolo Odin basado en análisis original
 
-        public event ProgressChangedDelegate ProgressChanged;
-        public event LogDelegate Log;
+        public event Action<long, long> ProgressChanged;
+        public event Action<string, LogLevel> Log;
         public event Odin_Flash.Util.Util.IsRunningProcessDelegate IsRunning;
 
         public Flash()
@@ -52,25 +49,88 @@ namespace Odin_Flash.Controls
 
             RepartitionCheckBx.IsEnabled = false;
             BtnClearPit.Visibility = Visibility.Collapsed;
-            Odin.Log += Odin_Log;
-            Odin.ProgressChanged += Odin_ProgressChanged;
 
-            // Inicializar el motor nativo
-            OdinEngine = new OdinEngine(Odin);
-            OdinEngine.Log += OdinEngine_Log;
-            // Conectar eventos de progreso de OdinEngine
-            OdinEngine.ProgressChanged += (filename, max, value, writenSize) =>
-            {
-                ProgressChanged?.Invoke(filename, max, value, writenSize);
-            };
+            // OdinEngine se inicializará cuando se detecte el puerto COM
+            OdinEngine = null;
         }
 
         /// <summary>
-        /// Maneja los logs de OdinEngine y los redirige al sistema de logging existente
+        /// Inicializa OdinEngine con el puerto COM detectado
         /// </summary>
-        private void OdinEngine_Log(string Text, MsgType Color, bool IsError = false)
+        private void InitializeOdinEngine(string portName)
         {
-            Log?.Invoke(Text, Color, IsError);
+            if (OdinEngine == null && !string.IsNullOrEmpty(portName))
+            {
+                OdinEngine = new OdinEngine(portName);
+                // Suscribirse al nuevo sistema de logging con LogLevel
+                OdinEngine.OnLog += (text, level) =>
+                {
+                    Log?.Invoke(text, level);
+                };
+                OdinEngine.OnProgress += (current, total) =>
+                {
+                    ProgressChanged?.Invoke(current, total);
+                };
+            }
+        }
+
+        /// <summary>
+        /// Convierte MsgType y bool isError a LogLevel para compatibilidad
+        /// </summary>
+        private LogLevel ConvertToLogLevel(MsgType messageType, bool isError)
+        {
+            if (isError)
+            {
+                return messageType == MsgType.Result ? LogLevel.Error : LogLevel.Warning;
+            }
+            return messageType == MsgType.Result ? LogLevel.Success : LogLevel.Info;
+        }
+
+        /// <summary>
+        /// Detecta el puerto COM usando OdinEngine
+        /// </summary>
+        private string DetectComPort()
+        {
+            try
+            {
+                // Si OdinEngine ya está inicializado, verificar si el dispositivo está conectado
+                if (OdinEngine != null)
+                {
+                    // Verificar conexión simple usando CheckDeviceConnected
+                    if (OdinEngine.CheckDeviceConnected())
+                    {
+                        var port = OdinEngine.GetCurrentPort();
+                        if (port != null && port.IsOpen)
+                        {
+                            return port.PortName;
+                        }
+                        // Si el puerto no está abierto pero el dispositivo está conectado, usar el nombre del puerto
+                        // El nombre del puerto se almacena en OdinEngine durante la inicialización
+                        return OdinEngine.GetCurrentPort()?.PortName;
+                    }
+                }
+                
+                // Usar detección automática de OdinEngine (detecta por VID/PID)
+                var result = Task.Run(async () => await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync()).Result;
+                if (result.success && !string.IsNullOrEmpty(result.portName))
+                {
+                    return result.portName;
+                }
+                
+                // Último fallback: buscar puertos COM disponibles
+                return System.IO.Ports.SerialPort.GetPortNames().FirstOrDefault();
+            }
+            catch
+            {
+                try
+                {
+                    return System.IO.Ports.SerialPort.GetPortNames().FirstOrDefault();
+                }
+                catch
+                {
+                    return null;
+                }
+            }
         }
 
 
@@ -90,22 +150,9 @@ namespace Odin_Flash.Controls
             BtnReadPit.IsEnabled = !IsEnable;
         }
 
-        private void Odin_Log(string Text, MsgType Color, bool IsError = false)
-        {
-            Log?.Invoke(Text, Color, IsError);
-        }
-
-        // ACTUALIZACIÓN INTELIGENTE DE UI (Para evitar error de E/S en 9GB)
-        // Solo notificamos a la UI cada 1MB o al terminar el archivo
-        private void Odin_ProgressChanged(string filename, long max, long value, long WritenSize)
-        {
-            // Solo notificamos a la UI cada 1MB o al terminar el archivo
-            if (WritenSize % (1024 * 1024) == 0 || WritenSize == max)
-            {
-                ProgressChanged?.Invoke(filename, max, value, WritenSize);
-            }
-        }
-        private void BtnChoosePit_Click(object sender, RoutedEventArgs e)
+        // Métodos Odin_Log y Odin_ProgressChanged eliminados - ya no se usan
+        // Los eventos ahora vienen directamente de OdinEngine
+        private async void BtnChoosePit_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
             {
@@ -124,7 +171,8 @@ namespace Odin_Flash.Controls
                 }
                 else
                 {
-                    var item = this.Odin.tar.TarInformation(filename);
+                    // Usar TarProcessor para procesar archivos .tar
+                    var item = await Odin_Flash.Class.TarProcessor.GetTarFileListAsync(filename);
                     if (item.Count > 0)
                     {
                         foreach (var Tiem in item)
@@ -161,23 +209,25 @@ namespace Odin_Flash.Controls
             var extension = System.IO.Path.GetExtension(path);
             if (extension.ToLower() == ".pit")
             {
-                if (Odin.PitTool.UNPACK_PIT(File.ReadAllBytes(path)))
+                // Usar PitTool para descomprimir PIT
+                if (Odin_Flash.Class.PitTool.UNPACK_PIT(File.ReadAllBytes(path)))
                 {
                     TxtBxPit.Text = path;
                     RepartitionCheckBx.IsChecked = true;
                 }
                 else
                 {
-                    Log?.Invoke($"File Curreped : {pitname}", MsgType.Message , true);
+                    Log?.Invoke($"File Curreped : {pitname}", ConvertToLogLevel(MsgType.Message, true));
                     return;
                 }
             }
             else
             {
-                var pit = await Odin.tar.ExtractFileFromTar(path, pitname);
-                if (pit.Length == 0 || !Odin.PitTool.UNPACK_PIT(pit))
+                // Extraer PIT desde archivo .tar
+                var pit = await Odin_Flash.Class.TarProcessor.ExtractFileFromTarAsync(path, pitname);
+                if (pit.Length == 0 || !Odin_Flash.Class.PitTool.UNPACK_PIT(pit))
                 {
-                    Log?.Invoke($"File Curreped : {pitname}", MsgType.Message, true);
+                    Log?.Invoke($"File Curreped : {pitname}", ConvertToLogLevel(MsgType.Message, true));
                     return;
                 }
                 else
@@ -190,54 +240,67 @@ namespace Odin_Flash.Controls
 
         public async Task DoFlash(long Size, List<FileFlash> ListFlash)
         {
-            var list = new List<SharpOdinClient.structs.FileFlash>();
-            foreach(var i in ListFlash)
+            // Paso 1: Detectar modo Download usando OdinEngine
+            Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
+            var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+            if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
             {
-                if (i.Enable)
-                {
-                    list.Add(new SharpOdinClient.structs.FileFlash
-                    {
-                        Enable = i.Enable,
-                        FileName = i.FileName,
-                        FilePath = i.FilePath,
-                        RawSize = i.RawSize
-                    });
-                }
-            }
-
-            if (!await Odin.FindAndSetDownloadMode())
-            {
+                Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
                 return;
             }
-            await Odin.PrintInfo();
-            Log?.Invoke("Checking Download Mode : ", MsgType.Message);
-            if (await Odin.IsOdin())
+
+            // Paso 2: Inicializar OdinEngine con el puerto detectado
+            if (OdinEngine == null)
             {
-                Log?.Invoke("ODIN", MsgType.Result);
-                Log?.Invoke($"Initializing Device : ", MsgType.Message);
-                if (await Odin.LOKE_Initialize(Size))
+                InitializeOdinEngine(downloadModeResult.portName);
+            }
+            else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
+            {
+                // Si el puerto cambió, recrear OdinEngine
+                OdinEngine?.Dispose();
+                InitializeOdinEngine(downloadModeResult.portName);
+            }
+
+            if (OdinEngine == null)
+            {
+                Log?.Invoke("Failed to initialize OdinEngine", LogLevel.Error);
+                return;
+            }
+
+            // Paso 3: Imprimir información del dispositivo
+            await Odin_Flash.Class.OdinEngineWrappers.PrintInfoAsync(OdinEngine);
+            Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
+            
+            // Paso 4: Verificar modo Odin
+            if (await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine))
+            {
+                Log?.Invoke("ODIN", LogLevel.Success);
+                Log?.Invoke($"Initializing Device : ", LogLevel.Info);
+                
+                // Paso 5: Inicializar comunicación LOKE
+                if (await Odin_Flash.Class.OdinEngineWrappers.LOKE_InitializeAsync(OdinEngine, Size))
                 {
-                    Log?.Invoke("Initialized", MsgType.Result);
+                    Log?.Invoke("Initialized", LogLevel.Success);
                     
                     // Buscar PIT automáticamente en los archivos tar según documentación
                     var findPit = ListFlash.Find(x => x.FileName.ToLower().EndsWith(".pit"));
                     if (findPit != null)
                     {
-                        Log?.Invoke("Pit Found on your tar package", MsgType.Message);
+                        Log?.Invoke("Pit Found on your tar package", LogLevel.Info);
                         var res = MessageBox.Show("Pit Finded on your tar package, you want to repartition?", "Repartition", MessageBoxButton.YesNo, MessageBoxImage.Question);
                         if (res == MessageBoxResult.Yes)
                         {
                             TxtBxPit.Text = findPit.FilePath;
                             RepartitionCheckBx.IsChecked = true;
-                            Log?.Invoke("Repartition Device : ", MsgType.Message);
-                            var Repartition = await Odin.Write_Pit(findPit.FilePath);
+                            Log?.Invoke("Repartition Device : ", LogLevel.Info);
+                            var Repartition = await Odin_Flash.Class.OdinEngineWrappers.Write_PitAsync(OdinEngine, findPit.FilePath);
                             if (Repartition.status)
                             {
-                                Log?.Invoke("Ok", MsgType.Result);
+                                Log?.Invoke("Ok", LogLevel.Success);
                             }
                             else
                             {
-                                Log?.Invoke(Repartition.error, MsgType.Result, true);
+                                Log?.Invoke(Repartition.error, LogLevel.Error);
                                 return;
                             }
                         }
@@ -245,24 +308,24 @@ namespace Odin_Flash.Controls
                     // Si el usuario seleccionó PIT manualmente (checkbox marcado)
                     else if (!string.IsNullOrEmpty(TxtBxPit.Text) && RepartitionCheckBx.IsChecked == true)
                     {
-                        Log?.Invoke("Repartition Device : ", MsgType.Message);
-                        var Repartition = await Odin.Write_Pit(TxtBxPit.Text);
+                        Log?.Invoke("Repartition Device : ", LogLevel.Info);
+                        var Repartition = await Odin_Flash.Class.OdinEngineWrappers.Write_PitAsync(OdinEngine, TxtBxPit.Text);
                         if (Repartition.status)
                         {
-                            Log?.Invoke("Ok", MsgType.Result);
+                            Log?.Invoke("Ok", LogLevel.Success);
                         }
                         else
                         {
-                            Log?.Invoke(Repartition.error, MsgType.Result, true);
+                            Log?.Invoke(Repartition.error, LogLevel.Error);
                             return;
                         }
                     }
 
-                    Log?.Invoke("Reading Pit from device : ", MsgType.Message);
-                    var GetPit = await Odin.Read_Pit();
+                    Log?.Invoke("Reading Pit from device : ", LogLevel.Info);
+                    var GetPit = await Odin_Flash.Class.OdinEngineWrappers.Read_PitAsync(OdinEngine);
                     if (GetPit.Result)
                     {
-                        Log?.Invoke("Ok", MsgType.Result);
+                        Log?.Invoke("Ok", LogLevel.Success);
                         var EfsClearInt = 0;
                         var BootUpdateInt = 0;
                         if (EfsClear.IsChecked == true)
@@ -275,11 +338,12 @@ namespace Odin_Flash.Controls
                         }
 
                         // Flashear archivos uno por uno con delays apropiados según el tamaño
+                        // Migración: Ahora usamos OdinEngine para todos los archivos
                         bool allFilesFlashed = true;
-                        int totalFiles = list.Count;
+                        int totalFiles = ListFlash.Count(f => f.Enable);
                         int currentFile = 0;
                         
-                        foreach (var file in list)
+                        foreach (var file in ListFlash)
                         {
                             if (!file.Enable)
                                 continue;
@@ -294,39 +358,33 @@ namespace Odin_Flash.Controls
                                              fileNameLower.Contains("system") || 
                                              (file.RawSize > 1073741824 && !isVeryLargeFile); // > 1GB pero < 5GB
                             
-                            Log?.Invoke($"Flashing {file.FileName} ({currentFile}/{totalFiles}) [{fileSizeGB:F2} GB] : ", MsgType.Message);
+                            Log?.Invoke($"Flashing {file.FileName} ({currentFile}/{totalFiles}) [{fileSizeGB:F2} GB] : ", LogLevel.Info);
                             
                             bool success;
                             
-                            // Usar el motor nativo para archivos grandes (>100MB) para evitar errores de E/S
-                            // SharpOdinClient se usa solo para archivos pequeños y análisis de .tar
-                            if (file.RawSize > 100 * 1024 * 1024) // > 100MB usa motor nativo
+                            // Usar OdinEngine para todos los archivos (migración completa)
+                            if (OdinEngine != null)
                             {
-                                // Nota: SendFileWithLokeProtocol requiere acceso directo al puerto
-                                // Si OdinEngine no tiene acceso directo, usamos SharpOdinClient como fallback
-                                var port = OdinEngine?.GetCurrentPort();
-                                if (port != null && port.IsOpen)
+                                // Verificar si el archivo existe
+                                if (!File.Exists(file.FilePath))
                                 {
-                                    // Usar SendFileWithLokeProtocol para envío nativo (eventos ya conectados en constructor)
-                                    success = await OdinEngine.SendFileWithLokeProtocol(file.FilePath, file.RawSize);
+                                    Log?.Invoke($"Archivo no encontrado: {file.FilePath}", LogLevel.Error);
+                                    allFilesFlashed = false;
+                                    continue;
                                 }
-                                else
-                                {
-                                    // Fallback a SharpOdinClient si no hay acceso directo al puerto
-                                    var singleFileList = new List<SharpOdinClient.structs.FileFlash> { file };
-                                    success = await Odin.FlashFirmware(singleFileList, GetPit.Pit, EfsClearInt, BootUpdateInt, true);
-                                }
+
+                                // Usar SendFileWithLokeProtocol para enviar el archivo
+                                success = await OdinEngine.SendFileWithLokeProtocol(file.FilePath, file.RawSize);
                             }
                             else
                             {
-                                // Archivos pequeños usan SharpOdinClient
-                                var singleFileList = new List<SharpOdinClient.structs.FileFlash> { file };
-                                success = await Odin.FlashFirmware(singleFileList, GetPit.Pit, EfsClearInt, BootUpdateInt, true);
+                                Log?.Invoke("OdinEngine no disponible", LogLevel.Error);
+                                success = false;
                             }
                             
                             if (success)
                             {
-                                Log?.Invoke("Ok", MsgType.Result);
+                                Log?.Invoke("Ok", LogLevel.Success);
                                 
                                 // Calcular delay basado en el tamaño real del archivo
                                 // Para archivos grandes, necesitamos más tiempo para que el dispositivo
@@ -338,14 +396,14 @@ namespace Odin_Flash.Controls
                                     // Para archivos muy grandes (>5GB), calcular delay basado en tamaño
                                     // Aproximadamente 5-6 segundos por GB, mínimo 30 segundos
                                     delayMs = Math.Max(30000, (int)(fileSizeGB * 6000)); // 6 segundos por GB, mínimo 30s
-                                    Log?.Invoke($"Waiting for very large file to complete write ({delayMs/1000}s)...", MsgType.Message);
+                                    Log?.Invoke($"Waiting for very large file to complete write ({delayMs/1000}s)...", LogLevel.Info);
                                 }
                                 else if (isLargeFile)
                                 {
                                     // Para archivos grandes (1-5GB), calcular delay basado en tamaño
                                     // Aproximadamente 8-10 segundos por GB, mínimo 15 segundos
                                     delayMs = Math.Max(15000, (int)(fileSizeGB * 10000)); // 10 segundos por GB, mínimo 15s
-                                    Log?.Invoke($"Waiting for large file to complete write ({delayMs/1000}s)...", MsgType.Message);
+                                    Log?.Invoke($"Waiting for large file to complete write ({delayMs/1000}s)...", LogLevel.Info);
                                 }
                                 else if (file.RawSize > 104857600) // > 100MB
                                 {
@@ -362,24 +420,22 @@ namespace Odin_Flash.Controls
                                 // Evita ERROR_IO_PENDING (0x3e5) cuando el puerto está bloqueado escribiendo a UFS/eMMC
                                 if (isVeryLargeFile || isLargeFile)
                                 {
-                                    Log?.Invoke("Clearing port buffers after large file...", MsgType.Message);
+                                    Log?.Invoke("Clearing port buffers after large file...", LogLevel.Info);
                                     try
                                     {
                                         // Usar OdinEngine para limpiar el puerto si está disponible
-                                        // Esto maneja el caso donde SharpOdinClient tiene el puerto abierto
-                                        // y necesitamos limpiar buffers antes del siguiente archivo
+                                        // Limpiar buffers antes del siguiente archivo
                                         if (OdinEngine != null)
                                         {
-                                            // Nota: OdinEngine puede no tener acceso directo al puerto si usa SharpOdinClient
-                                            // En ese caso, el método retornará true después de un delay
-                                            bool portReady = await Task.Run(() => OdinEngine.ClearPortAfterLargeFile());
+                                            // Usar método async
+                                            bool portReady = await OdinEngine.ClearPortAfterLargeFileAsync();
                                             if (portReady)
                                             {
-                                                Log?.Invoke("Port cleared and ready for next file", MsgType.Result);
+                                                Log?.Invoke("Port cleared and ready for next file", LogLevel.Success);
                                             }
                                             else
                                             {
-                                                Log?.Invoke("Warning: Port cleanup had issues, continuing anyway...", MsgType.Message);
+                                                Log?.Invoke("Warning: Port cleanup had issues, continuing anyway...", LogLevel.Warning);
                                             }
                                         }
                                         else
@@ -387,25 +443,25 @@ namespace Odin_Flash.Controls
                                             // Si no hay OdinEngine, hacer un delay adicional para archivos muy grandes
                                             if (isVeryLargeFile)
                                             {
-                                                Log?.Invoke("Additional wait for device buffer to clear...", MsgType.Message);
+                                                Log?.Invoke("Additional wait for device buffer to clear...", LogLevel.Info);
                                                 await Task.Delay(2000); // 2 segundos adicionales para controladores MICRON/UFS
                                             }
                                         }
                                     }
                                     catch (Exception ex)
                                     {
-                                        Log?.Invoke($"Error during port cleanup: {ex.Message}", MsgType.Result, true);
+                                        Log?.Invoke($"Error during port cleanup: {ex.Message}", LogLevel.Error);
                                         // Continuar de todas formas - el delay ya se aplicó
                                     }
                                 }
                             }
                             else
                             {
-                                Log?.Invoke("Failed", MsgType.Result, true);
+                                Log?.Invoke("Failed", LogLevel.Error);
                                 
                                 // AQUÍ ESTÁ EL TRUCO DE ODIN (Ref: 00438342):
                                 // Intentar recuperar el puerto usando funciones nativas de Windows
-                                Log?.Invoke("Error detectado. Intentando recuperar puerto...", MsgType.Message);
+                                Log?.Invoke("Error detectado. Intentando recuperar puerto...", LogLevel.Info);
                                 
                                 try
                                 {
@@ -415,32 +471,32 @@ namespace Odin_Flash.Controls
                                     {
                                         // Tenemos acceso directo al puerto - usar Win32Comm
                                         Win32Comm.ResetPort(port);
-                                        Log?.Invoke("Puerto recuperado usando Win32Comm", MsgType.Result);
+                                        Log?.Invoke("Puerto recuperado usando Win32Comm", LogLevel.Success);
                                     }
                                     else if (OdinEngine != null)
                                     {
-                                        // Intentar recuperar usando OdinEngine (puede funcionar aunque no tengamos acceso directo)
-                                        bool recovered = await Task.Run(() => OdinEngine.RecoverPortAfterError());
+                                        // Intentar recuperar usando OdinEngine (método async)
+                                        bool recovered = await OdinEngine.RecoverPortAfterErrorAsync();
                                         if (recovered)
                                         {
-                                            Log?.Invoke("Puerto recuperado y protocolo LOKE re-sincronizado", MsgType.Result);
+                                            Log?.Invoke("Puerto recuperado y protocolo LOKE re-sincronizado", LogLevel.Success);
                                         }
                                         else
                                         {
-                                            Log?.Invoke("Esperando estabilización del puerto...", MsgType.Message);
+                                            Log?.Invoke("Esperando estabilización del puerto...", LogLevel.Info);
                                             await Task.Delay(2000);
                                         }
                                     }
                                     else
                                     {
                                         // Si no hay OdinEngine, solo esperar
-                                        Log?.Invoke("Esperando estabilización del puerto...", MsgType.Message);
+                                        Log?.Invoke("Esperando estabilización del puerto...", LogLevel.Info);
                                         await Task.Delay(2000);
                                     }
                                 }
                                 catch (Exception recoveryEx)
                                 {
-                                    Log?.Invoke($"Error durante recuperación: {recoveryEx.Message}", MsgType.Result, true);
+                                    Log?.Invoke($"Error durante recuperación: {recoveryEx.Message}", LogLevel.Error);
                                     // Continuar de todas formas
                                     await Task.Delay(2000);
                                 }
@@ -449,7 +505,7 @@ namespace Odin_Flash.Controls
                                 // Para archivos grandes, es más probable que sea un error temporal
                                 if (isVeryLargeFile || isLargeFile)
                                 {
-                                    Log?.Invoke("Archivo grande falló. Continuando con siguiente archivo...", MsgType.Message);
+                                    Log?.Invoke("Archivo grande falló. Continuando con siguiente archivo...", LogLevel.Warning);
                                     // Continuar con el siguiente archivo en lugar de detener todo
                                 }
                                 else
@@ -467,39 +523,39 @@ namespace Odin_Flash.Controls
                             
                             if (AutoBoot.IsChecked == true)
                             {
-                                Log?.Invoke("Rebooting Device To Normal Mode : ", MsgType.Message);
-                                if (await Odin.PDAToNormal())
+                                Log?.Invoke("Rebooting Device To Normal Mode : ", LogLevel.Info);
+                                if (OdinEngine != null && await Odin_Flash.Class.OdinEngineWrappers.PDAToNormalAsync(OdinEngine))
                                 {
-                                    Log?.Invoke("Ok", MsgType.Result);
+                                    Log?.Invoke("Ok", LogLevel.Success);
                                 }
                                 else
                                 {
-                                    Log?.Invoke("Failed", MsgType.Result, true);
+                                    Log?.Invoke("Failed", LogLevel.Error);
                                 }
                             }
                             else
                             {
-                                Log?.Invoke("Auto Reboot Disabled Try Manual", MsgType.Message);
+                                Log?.Invoke("Auto Reboot Disabled Try Manual", LogLevel.Info);
                             }
                         }
                         else
                         {
-                            Log?.Invoke("Flash Failed - Some batches could not be flashed", MsgType.Result, true);
+                            Log?.Invoke("Flash Failed - Some batches could not be flashed", LogLevel.Error);
                         }
                     }
                     else
                     {
-                        Log?.Invoke("Failed to read PIT", MsgType.Result, true);
+                        Log?.Invoke("Failed to read PIT", LogLevel.Error);
                     }
                 }
                 else
                 {
-                    Log?.Invoke("Failed to Initialize", MsgType.Result, true);
+                    Log?.Invoke("Failed to Initialize", LogLevel.Error);
                 }
             }
             else
             {
-                Log?.Invoke("Device is not in ODIN mode", MsgType.Result, true);
+                Log?.Invoke("Device is not in ODIN mode", LogLevel.Error);
             }
         }
 
@@ -516,7 +572,7 @@ namespace Odin_Flash.Controls
                 ListFlash.AddRange(CSCPackage.Files);
                 if (ListFlash.Count > 0)
                 {
-                    Log?.Invoke("Calculated Size : ", MsgType.Message);
+                    Log?.Invoke("Calculated Size : ", LogLevel.Info);
                     var Size = 0L;
                     foreach (var item in ListFlash)
                     {
@@ -527,12 +583,12 @@ namespace Odin_Flash.Controls
                     }
                     if (Size > 0)
                     {
-                        Log?.Invoke(Util.Util.GetBytesReadable(Size),MsgType.Result );
+                        Log?.Invoke(Util.Util.GetBytesReadable(Size), LogLevel.Success);
                         await DoFlash(Size, ListFlash);
                     }
                     else
                     {
-                        Log?.Invoke("Failed",MsgType.Result , true);
+                        Log?.Invoke("Failed", LogLevel.Error);
                     }
                 }
                 else if (!string.IsNullOrEmpty(TxtBxPit.Text) && RepartitionCheckBx.IsChecked == true)
@@ -541,14 +597,14 @@ namespace Odin_Flash.Controls
                 }
                 else
                 {
-                    Log?.Invoke("Please Select Firmware Package and try again", MsgType.Message);
+                    Log?.Invoke("Please Select Firmware Package and try again", LogLevel.Info);
                 }
 
             }
             catch (Exception ee)
             {
-                Log?.Invoke($"System Error : ", MsgType.Message);
-                Log?.Invoke(ee.Message, MsgType.Result , true);
+                Log?.Invoke($"System Error : ", LogLevel.Info);
+                Log?.Invoke(ee.Message, LogLevel.Error);
 
             }
             finally
@@ -576,66 +632,89 @@ namespace Odin_Flash.Controls
         {
             try
             {
-                if (!await Odin.FindAndSetDownloadMode())
+                IsRunning?.Invoke(true, "ReadPit");
+                
+                Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
+                var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+                if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
                 {
+                    Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
                     return;
                 }
-                IsRunning?.Invoke(true, "ReadPit");
-                await Odin.PrintInfo();
-                Log?.Invoke("Checking Download Mode : ", MsgType.Message);
-                if (await Odin.IsOdin())
+
+                // Inicializar OdinEngine
+                if (OdinEngine == null)
                 {
-                    Log?.Invoke("ODIN",MsgType.Result );
-                    Log?.Invoke("Initializing Device : ", MsgType.Message);
-                    if (await Odin.LOKE_Initialize(0))
+                    InitializeOdinEngine(downloadModeResult.portName);
+                }
+                else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
+                {
+                    OdinEngine?.Dispose();
+                    InitializeOdinEngine(downloadModeResult.portName);
+                }
+
+                if (OdinEngine == null)
+                {
+                    Log?.Invoke("Failed to initialize OdinEngine", LogLevel.Error);
+                    return;
+                }
+
+                await Odin_Flash.Class.OdinEngineWrappers.PrintInfoAsync(OdinEngine);
+                Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
+                
+                if (await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine))
+                {
+                    Log?.Invoke("ODIN", LogLevel.Success);
+                    Log?.Invoke("Initializing Device : ", LogLevel.Info);
+                    if (await Odin_Flash.Class.OdinEngineWrappers.LOKE_InitializeAsync(OdinEngine, 0))
                     {
-                        Log?.Invoke("Initialized",MsgType.Result );
-                        Log?.Invoke("Reading Pit : ", MsgType.Message);
-                        var GetPit = await Odin.Read_Pit();
+                        Log?.Invoke("Initialized", LogLevel.Success);
+                        Log?.Invoke("Reading Pit : ", LogLevel.Info);
+                        var GetPit = await Odin_Flash.Class.OdinEngineWrappers.Read_PitAsync(OdinEngine);
                         if (GetPit.Result)
                         {
-                            Log?.Invoke("Ok",MsgType.Result );
-                            Log?.Invoke($"SavedPath : ", MsgType.Message);
+                            Log?.Invoke("Ok", LogLevel.Success);
+                            Log?.Invoke($"SavedPath : ", LogLevel.Info);
                             var fpath = $"{Util.Util.MyPath}\\backup\\samsung\\pit\\{DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss")}.pit";
                             Util.Util.CreatFolder(System.IO.Path.GetDirectoryName(fpath));
                             System.IO.File.WriteAllBytes(fpath, GetPit.data);
-                            Log?.Invoke(fpath,MsgType.Result );
+                            Log?.Invoke(fpath, LogLevel.Success);
                             if (AutoBoot.IsChecked == true)
                             {
-                                Log?.Invoke("Rebooting Device To Normal Mode : ", MsgType.Message);
-                                if (await Odin.PDAToNormal())
+                                Log?.Invoke("Rebooting Device To Normal Mode : ", LogLevel.Info);
+                                if (await Odin_Flash.Class.OdinEngineWrappers.PDAToNormalAsync(OdinEngine))
                                 {
-                                    Log?.Invoke("Ok",MsgType.Result );
+                                    Log?.Invoke("Ok", LogLevel.Success);
                                 }
                                 else
                                 {
-                                    Log?.Invoke("Failed", MsgType.Result , true);
+                                    Log?.Invoke("Failed", LogLevel.Error);
                                 }
                             }
                             else
                             {
-                                Log?.Invoke("Auto Reboot Disabled Try Manual", MsgType.Message);
+                                Log?.Invoke("Auto Reboot Disabled Try Manual", LogLevel.Info);
                             }
                         }
                         else
                         {
-                            Log?.Invoke("Failed", MsgType.Result , true);
+                            Log?.Invoke("Failed", LogLevel.Error);
                         }
                     }
                     else
                     {
-                        Log?.Invoke("Failed", MsgType.Result , true);
+                        Log?.Invoke("Failed", LogLevel.Error);
                     }
                 }
                 else
                 {
-                    Log?.Invoke("Failed", MsgType.Result , true);
+                    Log?.Invoke("Failed", LogLevel.Error);
                 }
             }
             catch (Exception ee)
             {
-                Log?.Invoke($"System Error : ", MsgType.Message);
-                Log?.Invoke(ee.Message, MsgType.Result , true);
+                Log?.Invoke($"System Error : ", LogLevel.Info);
+                Log?.Invoke(ee.Message, LogLevel.Error);
 
             }
             finally
