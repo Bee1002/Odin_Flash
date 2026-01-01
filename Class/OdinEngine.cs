@@ -5,7 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
-using SharpOdinClient.util.utils;
+using static SharpOdinClient.util.utils;
 
 namespace Odin_Flash.Class
 {
@@ -65,69 +65,87 @@ namespace Odin_Flash.Class
         /// </summary>
         private void LogMessage(string message, bool isError = false)
         {
-            Log?.Invoke(message, isError ? MsgType.Error : MsgType.Message, isError);
+            // Usar MsgType.Result para errores (con IsError=true) como en el código existente
+            Log?.Invoke(message, isError ? MsgType.Result : MsgType.Message, isError);
         }
 
         /// <summary>
         /// Método de transferencia segmentada basado en FUN_00435ad0
-        /// Replica el bucle for que divide cualquier buffer en trozos de 500 bytes
+        /// Usa bloques pequeños (500 bytes) por defecto para PIT y headers
         /// </summary>
         /// <param name="data">Datos a enviar</param>
+        /// <param name="useLargeBlocks">True para usar bloques de 128KB (imágenes), False para 500 bytes (PIT/headers)</param>
         /// <returns>True si la transferencia fue exitosa, False en caso contrario</returns>
-        public bool SendSegmentedData(byte[] data)
+        public bool SendSegmentedData(byte[] data, bool useLargeBlocks = false)
         {
-            return SendFileInSegments(data);
+            return SendFileInSegments(data, useLargeBlocks);
         }
 
         /// <summary>
-        /// Transferencia segmentada de 500 bytes con verificación de ACK (Ref: FUN_00435ad0)
-        /// Versión mejorada con verificación de ACK del dispositivo
+        /// Transferencia segmentada con tamaño configurable
+        /// Bloques pequeños (500 bytes): Para PIT y Headers iniciales - Usa LokeProtocol
+        /// Bloques grandes (128KB / 0x20000): Para archivos de imagen (system.img, boot.img)
         /// </summary>
         /// <param name="fileData">Datos del archivo a enviar</param>
+        /// <param name="useLargeBlocks">True para usar bloques de 128KB, False para 500 bytes</param>
         /// <returns>True si la transferencia fue exitosa</returns>
-        public bool SendFileInSegments(byte[] fileData)
+        public bool SendFileInSegments(byte[] fileData, bool useLargeBlocks = false)
         {
-            const int SEGMENT_SIZE = 500; // El "número mágico" de Odin
+            if (fileData == null || fileData.Length == 0)
+                return false;
+
             int total = fileData.Length;
-            int chunks = (total + SEGMENT_SIZE - 1) / SEGMENT_SIZE;
+            string blockType = useLargeBlocks ? $"{LokeProtocol.CHUNK_DATA / 1024}KB" : $"{LokeProtocol.CHUNK_CONTROL} bytes";
+            int chunks = useLargeBlocks 
+                ? (total + LokeProtocol.CHUNK_DATA - 1) / LokeProtocol.CHUNK_DATA
+                : (total + LokeProtocol.CHUNK_CONTROL - 1) / LokeProtocol.CHUNK_CONTROL;
 
-            LogMessage($"Iniciando transferencia segmentada: {total} bytes en {chunks} bloques de {SEGMENT_SIZE} bytes");
+            LogMessage($"Iniciando transferencia segmentada: {total} bytes en {chunks} bloques de {blockType}");
 
-            for (int i = 0; i < chunks; i++)
+            try
             {
-                int offset = i * SEGMENT_SIZE;
-                int count = Math.Min(SEGMENT_SIZE, total - offset);
-
-                try
+                if (_useDirectSerialPort)
                 {
-                    if (_useDirectSerialPort)
+                    // Modo mejorado: usar LokeProtocol
+                    if (!_port.IsOpen)
                     {
-                        // Modo mejorado: usar SerialPort directamente
-                        if (!_port.IsOpen)
-                        {
-                            LogMessage("Abriendo puerto serial...");
-                            _port.Open();
-                        }
+                        LogMessage("Abriendo puerto serial...");
+                        _port.Open();
+                    }
 
-                        _port.Write(fileData, offset, count);
-
-                        // Verificación de ACK (Odin espera un byte de confirmación)
-                        // Generalmente el teléfono responde 0x06 (ACK) tras cada bloque
-                        Thread.Sleep(10); // Delay de estabilidad visto en Ghidra
-                        
-                        if (_port.BytesToRead > 0)
-                        {
-                            int resp = _port.ReadByte();
-                            if (resp != 0x06)
-                            {
-                                LogMessage($"Error: ACK esperado (0x06), recibido 0x{resp:X2} en bloque {i + 1}", true);
-                                return false;
-                            }
-                        }
+                    bool success;
+                    if (useLargeBlocks)
+                    {
+                        // Usar método de bloques grandes para imágenes
+                        success = LokeProtocol.SendLargeSegmented(_port, fileData);
                     }
                     else
                     {
-                        // Modo compatibilidad: usar método existente
+                        // Usar método de bloques pequeños para PIT y comandos
+                        success = LokeProtocol.SendSegmented(_port, fileData);
+                    }
+
+                    if (success)
+                    {
+                        LogMessage("Transferencia segmentada completada exitosamente");
+                    }
+                    else
+                    {
+                        LogMessage("Error en la transferencia segmentada", true);
+                    }
+
+                    return success;
+                }
+                else
+                {
+                    // Modo compatibilidad: usar método existente
+                    int segmentSize = useLargeBlocks ? LokeProtocol.CHUNK_DATA : LokeProtocol.CHUNK_CONTROL;
+                    
+                    for (int i = 0; i < chunks; i++)
+                    {
+                        int offset = i * segmentSize;
+                        int count = Math.Min(segmentSize, total - offset);
+                        
                         byte[] chunk = new byte[count];
                         Buffer.BlockCopy(fileData, offset, chunk, 0, count);
                         
@@ -138,27 +156,28 @@ namespace Odin_Flash.Class
                         }
                         
                         Thread.Sleep(10);
+                        
+                        // Log de progreso cada 100 bloques (o cada 10 para bloques grandes)
+                        int logInterval = useLargeBlocks ? 10 : 100;
+                        if ((i + 1) % logInterval == 0 || i == chunks - 1)
+                        {
+                            LogMessage($"Progreso: {i + 1}/{chunks} bloques enviados ({(i + 1) * 100.0 / chunks:F1}%)");
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    LogMessage($"Error en bloque {i + 1}/{chunks}: {ex.Message}", true);
-                    if (_useDirectSerialPort)
-                    {
-                        ResetPortErrors();
-                    }
-                    return false;
-                }
 
-                // Log de progreso cada 100 bloques para no saturar
-                if ((i + 1) % 100 == 0 || i == chunks - 1)
-                {
-                    LogMessage($"Progreso: {i + 1}/{chunks} bloques enviados ({(i + 1) * 100.0 / chunks:F1}%)");
+                    LogMessage("Transferencia segmentada completada exitosamente");
+                    return true;
                 }
             }
-
-            LogMessage("Transferencia segmentada completada exitosamente");
-            return true;
+            catch (Exception ex)
+            {
+                LogMessage($"Error en SendFileInSegments: {ex.Message}", true);
+                if (_useDirectSerialPort)
+                {
+                    HandleCommError();
+                }
+                return false;
+            }
         }
 
         /// <summary>
@@ -200,29 +219,52 @@ namespace Odin_Flash.Class
         /// <summary>
         /// Resetea errores del puerto usando ClearCommError (Ref: FUN_00438342)
         /// Simula el manejo de errores de la función 00438342 del Odin original
+        /// Añade esto para manejar fallas en mitad del flasheo (Ref: 00438342)
         /// </summary>
         private void ResetPortErrors()
+        {
+            HandleCommError();
+        }
+
+        /// <summary>
+        /// Maneja errores de comunicación del puerto (Ref: 00438342)
+        /// En C#, esto limpia los buffers internos y resetea el estado del driver
+        /// Maneja el error 0x3e5 que encontramos en el análisis
+        /// </summary>
+        private void HandleCommError()
         {
             try
             {
                 if (_port != null && _port.IsOpen)
                 {
-                    // Intentar limpiar errores del puerto usando P/Invoke
-                    // Nota: Para obtener el handle del SerialPort necesitaríamos reflexión
-                    // Por ahora, cerramos y reabrimos el puerto como alternativa
-                    uint errors;
-                    // ClearCommError requiere el handle del puerto, que no está expuesto directamente
-                    // en SerialPort, así que usamos el método alternativo de cerrar/reabrir
+                    // Limpiar buffers internos (equivalente a ClearCommError)
+                    _port.DiscardInBuffer();
+                    _port.DiscardOutBuffer();
                     
-                    _port.Close();
-                    Thread.Sleep(500); // Delay para estabilizar
-                    _port.Open();
-                    LogMessage("Puerto serial reiniciado después de error");
+                    LogMessage("Buffers del puerto serial limpiados");
+                    
+                    // Opcional: Re-abrir el puerto si el error persiste
+                    // Por ahora solo limpiamos los buffers, que es lo más común
                 }
             }
             catch (Exception ex)
             {
-                LogMessage($"Error al resetear puerto: {ex.Message}", true);
+                LogMessage($"Error al manejar error de comunicación: {ex.Message}", true);
+                // Si falla la limpieza de buffers, intentar cerrar y reabrir
+                try
+                {
+                    if (_port != null && _port.IsOpen)
+                    {
+                        _port.Close();
+                        Thread.Sleep(500); // Delay para estabilizar
+                        _port.Open();
+                        LogMessage("Puerto serial reiniciado después de error crítico");
+                    }
+                }
+                catch (Exception ex2)
+                {
+                    LogMessage($"Error crítico al resetear puerto: {ex2.Message}", true);
+                }
             }
         }
 
@@ -308,61 +350,102 @@ namespace Odin_Flash.Class
         }
 
         /// <summary>
+        /// Escribe datos raw al puerto serial
+        /// </summary>
+        /// <param name="data">Datos a escribir</param>
+        private void WriteRaw(byte[] data)
+        {
+            if (_useDirectSerialPort && _port != null && _port.IsOpen)
+            {
+                _port.Write(data, 0, data.Length);
+            }
+            else
+            {
+                WriteToSerialPort(data);
+            }
+        }
+
+        /// <summary>
+        /// Lee datos raw del puerto serial
+        /// </summary>
+        /// <param name="count">Número de bytes a leer</param>
+        /// <returns>Array de bytes leídos</returns>
+        private byte[] ReadRaw(int count)
+        {
+            if (_useDirectSerialPort && _port != null && _port.IsOpen)
+            {
+                byte[] buffer = new byte[count];
+                int bytesRead = _port.Read(buffer, 0, count);
+                if (bytesRead < count)
+                {
+                    byte[] result = new byte[bytesRead];
+                    Buffer.BlockCopy(buffer, 0, result, 0, bytesRead);
+                    return result;
+                }
+                return buffer;
+            }
+            else
+            {
+                // Modo compatibilidad: retornar array vacío (debe implementarse según API)
+                return new byte[count];
+            }
+        }
+
+        /// <summary>
         /// PASO 1 & 2: El Saludo ODIN -> LOKE (Ref: FUN_00434d50)
         /// Inicializa el protocolo enviando "ODIN" y esperando "LOKE"
+        /// Implementación exacta basada en el análisis de Ghidra
         /// </summary>
         /// <returns>True si el dispositivo responde correctamente con "LOKE"</returns>
         public bool InitializeProtocol()
         {
+            return PrepareLokeHandshake();
+        }
+
+        /// <summary>
+        /// Prepara el handshake LOKE (Ref: FUN_00434d50 de Ghidra)
+        /// Secuencia exacta encontrada en el análisis
+        /// Usa LokeProtocol para la implementación
+        /// </summary>
+        /// <returns>True si el handshake fue exitoso</returns>
+        public bool PrepareLokeHandshake()
+        {
             try
             {
-                if (_useDirectSerialPort)
-                {
-                    // Modo mejorado: usar SerialPort directamente
-                    if (!_port.IsOpen)
-                    {
-                        LogMessage("Abriendo puerto serial...");
-                        _port.Open();
-                    }
-
-                    // 1. Enviar saludo "ODIN"
-                    byte[] hello = Encoding.ASCII.GetBytes("ODIN");
-                    _port.Write(hello, 0, hello.Length);
-                    
-                    Thread.Sleep(100); // El delay de estabilidad visto en Ghidra
-
-                    // 2. Leer respuesta (Esperamos "LOKE")
-                    byte[] buffer = new byte[4];
-                    int bytesRead = _port.Read(buffer, 0, 4);
-                    string response = Encoding.ASCII.GetString(buffer, 0, bytesRead);
-
-                    if (response == "LOKE")
-                    {
-                        LogMessage("Handshake LOKE exitoso");
-                        return true;
-                    }
-                    else
-                    {
-                        LogMessage($"Respuesta inesperada: '{response}' (esperado 'LOKE')", true);
-                        return false;
-                    }
-                }
-                else
+                if (!_useDirectSerialPort)
                 {
                     // Modo compatibilidad: usar SharpOdinClient
                     LogMessage("Ejecutando handshake LOKE (modo compatibilidad)...");
-                    // Nota: SharpOdinClient ya tiene LOKE_Initialize que probablemente
-                    // hace esto internamente, pero este método permite un control más fino
-                    // del protocolo según el análisis original.
                     return true;
                 }
+
+                if (!_port.IsOpen)
+                {
+                    LogMessage("Abriendo puerto serial...");
+                    _port.Open();
+                }
+
+                // Usar LokeProtocol para el handshake
+                LogMessage("SetupConnection..");
+                bool success = LokeProtocol.PerformHandshake(_port);
+                
+                if (success)
+                {
+                    LogMessage("SetupConnection.. OK!");
+                }
+                else
+                {
+                    LogMessage("SetupConnection.. Error de protocolo", true);
+                }
+                
+                return success;
             }
             catch (Exception ex)
             {
-                LogMessage($"Error en InitializeProtocol: {ex.Message}", true);
+                LogMessage($"Error en PrepareLokeHandshake: {ex.Message}", true);
                 if (_useDirectSerialPort)
                 {
-                    ResetPortErrors();
+                    HandleCommError();
                 }
                 return false;
             }
@@ -396,19 +479,21 @@ namespace Odin_Flash.Class
 
                 // PASO 3: Sesión PIT (FUN_00434fb0)
                 LogMessage("Configurando particiones (PIT)...");
-                // Aquí usamos la transferencia segmentada para el archivo PIT
+                // Aquí usamos la transferencia segmentada con bloques pequeños (500 bytes) para el archivo PIT
                 if (pitFile != null && pitFile.Length > 0)
                 {
-                    if (!SendSegmentedData(pitFile)) 
+                    if (!SendSegmentedData(pitFile, useLargeBlocks: false)) 
                     {
                         throw new Exception("Error al enviar PIT.");
                     }
+                    // Delay crítico: El chip de memoria (eMMC/UFS) necesita tiempo para cambiar de modo lectura a modo escritura
+                    Thread.Sleep(LokeProtocol.DELAY_STABILITY);
                 }
 
                 // PASO 4: Transferencia de Firmware (FUN_00435ad0)
                 LogMessage("Flasheando firmware...");
-                // Aquí es donde entra el grueso de los datos
-                bool success = await Task.Run(() => SendSegmentedData(firmwareFile));
+                // Aquí es donde entra el grueso de los datos - usar bloques grandes (128KB) para imágenes
+                bool success = await Task.Run(() => SendSegmentedData(firmwareFile, useLargeBlocks: true));
 
                 if (success) 
                 {
@@ -491,24 +576,29 @@ namespace Odin_Flash.Class
                     LogMessage("FAIL! El teléfono no respondió LOKE.", true);
                     return false;
                 }
+                // Delay crítico entre pasos de inicialización (máquina de estados)
+                Thread.Sleep(LokeProtocol.DELAY_STABILITY);
 
                 // 3. PIT (FUN_00434fb0)
                 if (pit != null && pit.Length > 0)
                 {
                     LogMessage("Enviando tabla de particiones (PIT)...");
-                    if (!SendFileInSegments(pit))
+                    // PIT usa bloques pequeños (500 bytes) - Protocolo de Control
+                    if (!SendFileInSegments(pit, useLargeBlocks: false))
                     {
                         LogMessage("FAIL! Error en sesión PIT.", true);
                         return false;
                     }
-                    Thread.Sleep(100);
+                    // Delay crítico: El chip de memoria (eMMC/UFS) necesita tiempo para cambiar de modo lectura a modo escritura
+                    Thread.Sleep(LokeProtocol.DELAY_STABILITY);
                 }
 
                 // 4. System/PDA (FUN_00435ad0)
                 if (pda != null && pda.Length > 0)
                 {
                     LogMessage("Flasheando sistema (PDA)...");
-                    bool success = await Task.Run(() => SendFileInSegments(pda));
+                    // Imágenes usan bloques grandes (128KB) para eficiencia
+                    bool success = await Task.Run(() => SendFileInSegments(pda, useLargeBlocks: true));
 
                     if (success)
                     {

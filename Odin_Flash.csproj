@@ -209,6 +209,7 @@
       <DependentUpon>App.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="Class\LokeProtocol.cs" />
     <Compile Include="Class\OdinEngine.cs" />
     <Compile Include="Class\ScreenCapture.cs" />
     <Compile Include="Controls\Flash.xaml.cs">
