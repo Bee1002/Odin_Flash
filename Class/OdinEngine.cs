@@ -1,227 +1,124 @@
 using System;
 using System.IO;
 using System.IO.Ports;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+using System.Reflection;
 using static SharpOdinClient.util.utils;
 
 namespace Odin_Flash.Class
 {
-    public class OdinEngine
+    /// <summary>
+    /// Motor de protocolo Odin refactorizado y robusto
+    /// Usa Streams para soportar archivos de varios GB sin OutOfMemory
+    /// Basado en análisis de Ghidra: FUN_00435ad0, FUN_00434170, FUN_00434d50, FUN_00434fb0, FUN_00438342
+    /// </summary>
+    public class OdinEngine : IDisposable
     {
-        // Delegados y Eventos
+        // Eventos para la UI (compatibles con el sistema existente)
         public delegate void LogDelegate(string Text, MsgType Color, bool IsError = false);
         public delegate void ProgressDelegate(string filename, long max, long value, long writenSize);
         
         public event LogDelegate Log;
         public event ProgressDelegate ProgressChanged;
 
-        private SharpOdinClient.Odin odinInstance;
         private SerialPort _port;
+        private readonly string _portName;
+        private SharpOdinClient.Odin odinInstance;
         private bool _useDirectSerialPort = false;
 
-        [DllImport("kernel32.dll")]
-        static extern bool ClearCommError(IntPtr hFile, out uint lpErrors, IntPtr lpStat);
+        // Importación nativa para limpiar el puerto (Ref: Ghidra FUN_00438342)
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool PurgeComm(IntPtr hFile, uint dwFlags);
+        
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ClearCommError(SafeFileHandle hFile, out uint lpErrors, IntPtr lpStat);
 
+        private const uint PURGE_TXABORT = 0x0001;
+        private const uint PURGE_RXABORT = 0x0002;
+        private const uint PURGE_TXCLEAR = 0x0004;
+        private const uint PURGE_RXCLEAR = 0x0008;
+
+        /// <summary>
+        /// Constructor para modo compatibilidad con SharpOdinClient
+        /// </summary>
         public OdinEngine(SharpOdinClient.Odin odin)
         {
             odinInstance = odin ?? throw new ArgumentNullException(nameof(odin));
             _useDirectSerialPort = false;
         }
 
+        /// <summary>
+        /// Constructor para modo directo con puerto serial
+        /// </summary>
         public OdinEngine(string portName)
         {
             if (string.IsNullOrEmpty(portName))
                 throw new ArgumentNullException(nameof(portName));
-
-            _port = new SerialPort(portName, 115200, Parity.None, 8, StopBits.One)
-            {
-                ReadTimeout = 5000,
-                WriteTimeout = 5000
-            };
+            
+            _portName = portName;
             _useDirectSerialPort = true;
         }
 
-        private void LogMessage(string message, bool isError = false)
+        private void LogMessage(string msg, bool error = false)
         {
-            Log?.Invoke(message, isError ? MsgType.Result : MsgType.Message, isError);
+            Log?.Invoke(msg, error ? MsgType.Result : MsgType.Message, error);
         }
 
-        public bool SendSegmentedData(byte[] data, bool useLargeBlocks = false)
+        /// <summary>
+        /// Flasheo robusto usando FileStream para evitar OutOfMemory
+        /// Soporta archivos de varios GB sin cargar todo en memoria
+        /// </summary>
+        public async Task<bool> FlashFileAsync(string filePath, bool isLargeFile)
         {
-            return SendFileInSegments(data, useLargeBlocks);
-        }
-
-        public bool SendFileInSegments(byte[] fileData, bool useLargeBlocks = false)
-        {
-            if (fileData == null || fileData.Length == 0) return false;
-
-            int total = fileData.Length;
-            int chunkSize = useLargeBlocks ? LokeProtocol.CHUNK_DATA : LokeProtocol.CHUNK_CONTROL;
-            int chunks = (total + chunkSize - 1) / chunkSize;
+            if (!File.Exists(filePath))
+            {
+                LogMessage($"Archivo no encontrado: {filePath}", true);
+                return false;
+            }
 
             try
             {
-                if (_useDirectSerialPort)
+                using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 131072, useAsync: true))
                 {
-                    if (!_port.IsOpen) _port.Open();
-                    return useLargeBlocks ? LokeProtocol.SendLargeSegmented(_port, fileData) : LokeProtocol.SendSegmented(_port, fileData);
-                }
-                else
-                {
-                    for (int i = 0; i < chunks; i++)
-                    {
-                        int offset = i * chunkSize;
-                        int count = Math.Min(chunkSize, total - offset);
-                        byte[] chunk = new byte[count];
-                        Buffer.BlockCopy(fileData, offset, chunk, 0, count);
+                    long totalSize = fs.Length;
+                    long bytesSent = 0;
+                    int chunkSize = isLargeFile ? LokeProtocol.CHUNK_DATA : LokeProtocol.CHUNK_CONTROL;
+                    byte[] buffer = new byte[chunkSize];
 
-                        if (!WriteToSerialPort(chunk)) return false;
+                    string fileName = Path.GetFileName(filePath);
+                    LogMessage($"Iniciando transferencia de {fileName} ({totalSize / (1024.0 * 1024.0):F2} MB)...");
+
+                    if (!PrepareConnection()) return false;
+
+                    int read;
+                    long lastProgressReport = 0;
+                    const long PROGRESS_REPORT_INTERVAL = 1024 * 1024; // Reportar cada 1MB
+
+                    while ((read = await fs.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    {
+                        if (!SendBufferDirect(buffer, read)) return false;
+
+                        bytesSent += read;
                         
-                        Thread.Sleep(10);
-                        if ((i + 1) % (useLargeBlocks ? 10 : 100) == 0 || i == chunks - 1)
+                        // Reportar progreso cada 1MB para no saturar UI
+                        if (bytesSent - lastProgressReport >= PROGRESS_REPORT_INTERVAL || bytesSent == totalSize)
                         {
-                            LogMessage($"Progreso: {i + 1}/{chunks} ({(i + 1) * 100.0 / chunks:F1}%)");
+                            ProgressChanged?.Invoke(fileName, totalSize, bytesSent, bytesSent);
+                            lastProgressReport = bytesSent;
                         }
                     }
+
+                    ProgressChanged?.Invoke(fileName, totalSize, totalSize, totalSize);
+                    LogMessage($"Transferencia completada: {fileName}");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                LogMessage($"Error: {ex.Message}", true);
-                if (_useDirectSerialPort) HandleCommError();
-                return false;
-            }
-        }
-
-        private bool WriteToSerialPort(byte[] data)
-        {
-            try {
-                LogMessage($"[DEBUG] Escribiendo {data.Length} bytes...");
-                return true; 
-            } catch { return false; }
-        }
-
-        private void HandleCommError()
-        {
-            try {
-                if (_port != null && _port.IsOpen) {
-                    if (!Win32Comm.ResetPort(_port)) {
-                        _port.DiscardInBuffer();
-                        _port.DiscardOutBuffer();
-                    }
-                }
-            } catch (Exception ex) { LogMessage($"Error reset: {ex.Message}", true); }
-        }
-
-        public async Task<bool> FlashSequenceAsync(byte[] pitFile, byte[] firmwareFile)
-        {
-            try {
-                if (!SendInitialPing()) throw new Exception("Device not responding.");
-                if (!InitializeProtocol()) throw new Exception("LOKE handshake failed.");
-
-                if (pitFile != null) {
-                    if (!SendSegmentedData(pitFile, false)) throw new Exception("PIT Error");
-                    await Task.Delay(LokeProtocol.DELAY_STABILITY);
-                }
-
-                return await Task.Run(() => SendSegmentedData(firmwareFile, true));
-            }
-            catch (Exception ex) {
-                LogMessage($"ERROR: {ex.Message}", true);
-                return false;
-            }
-        }
-
-        public bool SendInitialPing() => _useDirectSerialPort ? (_port.IsOpen || (OpenPort() && true)) : true;
-        
-        private bool OpenPort() { try { _port.Open(); return true; } catch { return false; } }
-
-        public bool InitializeProtocol() => _useDirectSerialPort ? LokeProtocol.PerformHandshake(_port) : true;
-
-        /// <summary>
-        /// Obtiene el puerto serial actual (para uso con Win32Comm)
-        /// Retorna null si no hay acceso directo al puerto
-        /// </summary>
-        public System.IO.Ports.SerialPort GetCurrentPort()
-        {
-            if (_useDirectSerialPort && _port != null)
-            {
-                return _port;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Recupera el puerto después de un error usando funciones nativas y re-sincroniza LOKE
-        /// </summary>
-        public bool RecoverPortAfterError()
-        {
-            if (!_useDirectSerialPort || _port == null)
-            {
-                Thread.Sleep(500);
-                return true;
-            }
-
-            try
-            {
-                LogMessage("Error detectado. Intentando recuperar puerto...");
-                bool resetSuccess = Win32Comm.ResetPort(_port);
-                if (!resetSuccess)
-                {
-                    if (_port.IsOpen)
-                    {
-                        _port.DiscardInBuffer();
-                        _port.DiscardOutBuffer();
-                    }
-                }
-                Thread.Sleep(500);
-                if (!_port.IsOpen) _port.Open();
-                bool handshakeSuccess = LokeProtocol.PerformHandshake(_port);
-                if (handshakeSuccess)
-                {
-                    LogMessage("Puerto recuperado y protocolo LOKE re-sincronizado");
-                    return true;
-                }
-                return false;
-            }
-            catch (Exception ex)
-            {
-                LogMessage($"Error durante recuperación: {ex.Message}", true);
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Limpieza después de archivos grandes para evitar ERROR_IO_PENDING
-        /// </summary>
-        public bool ClearPortAfterLargeFile()
-        {
-            if (!_useDirectSerialPort || _port == null)
-            {
-                Thread.Sleep(500);
-                return true;
-            }
-
-            try
-            {
-                LogMessage("Waiting for device buffer to clear...");
-                Thread.Sleep(500);
-                if (!_port.IsOpen) _port.Open();
-                bool resetSuccess = Win32Comm.ResetPort(_port);
-                if (!resetSuccess)
-                {
-                    _port.DiscardInBuffer();
-                    _port.DiscardOutBuffer();
-                }
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LogMessage($"Error durante limpieza: {ex.Message}", true);
+                LogMessage($"Fallo crítico: {ex.Message}", true);
                 return false;
             }
         }
@@ -232,7 +129,7 @@ namespace Odin_Flash.Class
         /// </summary>
         public async Task<bool> SendFileWithLokeProtocol(string filePath, long fileSize)
         {
-            if (!_useDirectSerialPort || _port == null)
+            if (!_useDirectSerialPort)
             {
                 LogMessage("SendFileWithLokeProtocol requiere acceso directo al puerto serial", true);
                 return false;
@@ -251,11 +148,14 @@ namespace Odin_Flash.Class
             {
                 if (fileSize > 100 * 1024 * 1024)
                 {
-                    _port.WriteTimeout = -1;
-                    _port.ReadTimeout = 10000;
+                    if (_port != null)
+                    {
+                        _port.WriteTimeout = -1;
+                        _port.ReadTimeout = 10000;
+                    }
                 }
 
-                if (!_port.IsOpen) _port.Open();
+                if (!PrepareConnection()) return false;
 
                 LogMessage($"Iniciando envío de {fileName} ({fileSize / (1024.0 * 1024.0):F2} MB)");
 
@@ -307,18 +207,7 @@ namespace Odin_Flash.Class
                             catch (IOException ex)
                             {
                                 LogMessage($"Atasco de E/S detectado. Aplicando corrección Odin...", true);
-                                bool resetSuccess = Win32Comm.ResetPort(_port);
-                                if (!resetSuccess)
-                                {
-                                    _port.DiscardInBuffer();
-                                    _port.DiscardOutBuffer();
-                                }
-                                Thread.Sleep(LokeProtocol.DELAY_STABILITY);
-                                if (!LokeProtocol.PerformHandshake(_port))
-                                {
-                                    LogMessage("No se pudo re-sincronizar protocolo LOKE", true);
-                                    return false;
-                                }
+                                if (!RecoverPortAfterError()) return false;
                                 try
                                 {
                                     _port.Write(buffer, 0, bytesRead);
@@ -346,13 +235,7 @@ namespace Odin_Flash.Class
                 if (fileSize > 100 * 1024 * 1024)
                 {
                     LogMessage("Archivo grande finalizado. Limpiando buffers...");
-                    bool resetSuccess = Win32Comm.ResetPort(_port);
-                    if (!resetSuccess)
-                    {
-                        _port.DiscardInBuffer();
-                        _port.DiscardOutBuffer();
-                    }
-                    Thread.Sleep(500);
+                    ClearPortAfterLargeFile();
                 }
 
                 ProgressChanged?.Invoke(fileName, fileSize, fileSize, fileSize);
@@ -366,7 +249,7 @@ namespace Odin_Flash.Class
             }
             finally
             {
-                if (fileSize > 100 * 1024 * 1024)
+                if (fileSize > 100 * 1024 * 1024 && _port != null)
                 {
                     _port.WriteTimeout = 5000;
                     _port.ReadTimeout = 5000;
@@ -374,11 +257,171 @@ namespace Odin_Flash.Class
             }
         }
 
-        public void Close()
+        private bool PrepareConnection()
         {
-            if (_port != null) {
+            try
+            {
+                if (!_useDirectSerialPort)
+                {
+                    return true; // Modo compatibilidad
+                }
+
+                if (_port == null || !_port.IsOpen)
+                {
+                    if (_port == null)
+                    {
+                        _port = new SerialPort(_portName, 115200, Parity.None, 8, StopBits.One)
+                        {
+                            ReadTimeout = 5000,
+                            WriteTimeout = 5000
+                        };
+                    }
+                    _port.Open();
+                }
+                
+                // Limpieza nativa de buffers (Clave para evitar ERROR_IO_PENDING)
+                PurgePortBuffers();
+                
+                return LokeProtocol.PerformHandshake(_port);
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error en PrepareConnection: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Limpieza nativa de buffers usando PurgeComm (Ref: FUN_00438342)
+        /// </summary>
+        private void PurgePortBuffers()
+        {
+            try
+            {
+                if (_port == null || !_port.IsOpen) return;
+
+                // Obtener el handle del puerto usando reflexión
+                var baseStream = _port.BaseStream;
+                var handleField = baseStream.GetType().GetField("_handle", 
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                
+                if (handleField != null)
+                {
+                    var handle = (SafeFileHandle)handleField.GetValue(baseStream);
+                    if (handle != null && !handle.IsInvalid)
+                    {
+                        PurgeComm(handle.DangerousGetHandle(), 
+                            PURGE_RXCLEAR | PURGE_TXCLEAR | PURGE_RXABORT | PURGE_TXABORT);
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback a métodos públicos si la limpieza nativa falla
+                if (_port != null && _port.IsOpen)
+                {
+                    _port.DiscardInBuffer();
+                    _port.DiscardOutBuffer();
+                }
+            }
+        }
+
+        private bool SendBufferDirect(byte[] data, int length)
+        {
+            try
+            {
+                if (_port == null || !_port.IsOpen) return false;
+                _port.Write(data, 0, length);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error al enviar buffer: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el puerto serial actual (para uso con Win32Comm)
+        /// </summary>
+        public System.IO.Ports.SerialPort GetCurrentPort()
+        {
+            if (_useDirectSerialPort && _port != null)
+            {
+                return _port;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Recupera el puerto después de un error usando funciones nativas y re-sincroniza LOKE
+        /// </summary>
+        public bool RecoverPortAfterError()
+        {
+            if (!_useDirectSerialPort || _port == null)
+            {
+                Thread.Sleep(500);
+                return true;
+            }
+
+            try
+            {
+                LogMessage("Error detectado. Intentando recuperar puerto...");
+                PurgePortBuffers();
+                Thread.Sleep(500);
+                
+                if (!_port.IsOpen) _port.Open();
+                
+                bool handshakeSuccess = LokeProtocol.PerformHandshake(_port);
+                if (handshakeSuccess)
+                {
+                    LogMessage("Puerto recuperado y protocolo LOKE re-sincronizado");
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error durante recuperación: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Limpieza después de archivos grandes para evitar ERROR_IO_PENDING
+        /// </summary>
+        public bool ClearPortAfterLargeFile()
+        {
+            if (!_useDirectSerialPort || _port == null)
+            {
+                Thread.Sleep(500);
+                return true;
+            }
+
+            try
+            {
+                LogMessage("Waiting for device buffer to clear...");
+                Thread.Sleep(500);
+                
+                if (!_port.IsOpen) _port.Open();
+                
+                PurgePortBuffers();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error durante limpieza: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_port != null)
+            {
                 if (_port.IsOpen) _port.Close();
                 _port.Dispose();
+                _port = null;
             }
         }
     }
