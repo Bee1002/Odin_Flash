@@ -220,6 +220,7 @@
       <DependentUpon>FlashField.xaml</DependentUpon>
     </Compile>
     <Compile Include="Util\FileFlash.cs" />
+    <Compile Include="Util\Lz4Decompress.cs" />
     <Compile Include="Util\Util.cs" />
     <Compile Include="window\Main.xaml.cs">
       <DependentUpon>Main.xaml</DependentUpon>

@@ -24,6 +24,9 @@ namespace Odin_Flash.window
     /// </summary>
     public partial class Main : Window
     {
+        // Variable para rastrear el último tamaño reportado (evita saturar CPU)
+        private long _lastReportedSize = 0;
+        private const long PROGRESS_UPDATE_INTERVAL = 1024 * 1024; // Actualizar cada 1MB
 
         public Flash Flash;
         public Main()
@@ -45,13 +48,33 @@ namespace Odin_Flash.window
             });
         }
 
+        /// <summary>
+        /// Maneja el cambio de progreso del flasheo
+        /// Optimizado para archivos grandes: actualiza solo cada 1MB para no saturar el hilo de E/S
+        /// Usa BeginInvoke en lugar de Invoke para no bloquear el hilo de envío
+        /// </summary>
         private void Flash_ProgressChanged(string filename, long max, long value, long WritenSize)
         {
-            Application.Current.Dispatcher.Invoke(() => {
-                ProgBar.Maximum = max;
-                ProgBar.Value = value;
-                Events.Content = $"{filename} | {WritenSize:###,###,###}";
-            });
+            // Actualizar solo cada 1MB para no saturar el hilo de E/S
+            // Para archivos de 9GB, esto reduce las actualizaciones de ~9000 a ~9000/1024 = ~9 actualizaciones por segundo máximo
+            long sizeDifference = WritenSize - _lastReportedSize;
+            
+            if (sizeDifference >= PROGRESS_UPDATE_INTERVAL || WritenSize == max || _lastReportedSize == 0)
+            {
+                _lastReportedSize = WritenSize;
+                
+                // Usar BeginInvoke en lugar de Invoke para no bloquear el hilo de envío
+                // Esto es crítico para evitar que el hilo de E/S se detenga esperando la UI
+                Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+                    ProgBar.Maximum = max;
+                    ProgBar.Value = value;
+                    
+                    // Formato mejorado: mostrar MB en lugar de bytes para mejor legibilidad
+                    long writenMB = WritenSize / (1024 * 1024);
+                    long maxMB = max / (1024 * 1024);
+                    Events.Content = $"{filename} | {writenMB} MB / {maxMB} MB";
+                }));
+            }
         }
 
         private void Flash_Log(string Text, SharpOdinClient.util.utils.MsgType Color, bool IsError = false)

@@ -55,10 +55,14 @@ namespace Odin_Flash.Controls
             Odin.Log += Odin_Log;
             Odin.ProgressChanged += Odin_ProgressChanged;
 
-            // Inicializar OdinEngine con la instancia de Odin
+            // Inicializar el motor nativo
             OdinEngine = new OdinEngine(Odin);
             OdinEngine.Log += OdinEngine_Log;
-
+            // Conectar eventos de progreso de OdinEngine
+            OdinEngine.ProgressChanged += (filename, max, value, writenSize) =>
+            {
+                ProgressChanged?.Invoke(filename, max, value, writenSize);
+            };
         }
 
         /// <summary>
@@ -91,9 +95,15 @@ namespace Odin_Flash.Controls
             Log?.Invoke(Text, Color, IsError);
         }
 
+        // ACTUALIZACIÓN INTELIGENTE DE UI (Para evitar error de E/S en 9GB)
+        // Solo notificamos a la UI cada 1MB o al terminar el archivo
         private void Odin_ProgressChanged(string filename, long max, long value, long WritenSize)
         {
-            ProgressChanged?.Invoke(filename, max, value, WritenSize);
+            // Solo notificamos a la UI cada 1MB o al terminar el archivo
+            if (WritenSize % (1024 * 1024) == 0 || WritenSize == max)
+            {
+                ProgressChanged?.Invoke(filename, max, value, WritenSize);
+            }
         }
         private void BtnChoosePit_Click(object sender, RoutedEventArgs e)
         {
@@ -286,9 +296,35 @@ namespace Odin_Flash.Controls
                             
                             Log?.Invoke($"Flashing {file.FileName} ({currentFile}/{totalFiles}) [{fileSizeGB:F2} GB] : ", MsgType.Message);
                             
-                            var singleFileList = new List<SharpOdinClient.structs.FileFlash> { file };
+                            bool success;
                             
-                            if (await Odin.FlashFirmware(singleFileList, GetPit.Pit, EfsClearInt, BootUpdateInt, true))
+                            // Usar el motor nativo para archivos grandes (>100MB) para evitar errores de E/S
+                            // SharpOdinClient se usa solo para archivos pequeños y análisis de .tar
+                            if (file.RawSize > 100 * 1024 * 1024) // > 100MB usa motor nativo
+                            {
+                                // Nota: SendFileWithLokeProtocol requiere acceso directo al puerto
+                                // Si OdinEngine no tiene acceso directo, usamos SharpOdinClient como fallback
+                                var port = OdinEngine?.GetCurrentPort();
+                                if (port != null && port.IsOpen)
+                                {
+                                    // Usar SendFileWithLokeProtocol para envío nativo (eventos ya conectados en constructor)
+                                    success = await OdinEngine.SendFileWithLokeProtocol(file.FilePath, file.RawSize);
+                                }
+                                else
+                                {
+                                    // Fallback a SharpOdinClient si no hay acceso directo al puerto
+                                    var singleFileList = new List<SharpOdinClient.structs.FileFlash> { file };
+                                    success = await Odin.FlashFirmware(singleFileList, GetPit.Pit, EfsClearInt, BootUpdateInt, true);
+                                }
+                            }
+                            else
+                            {
+                                // Archivos pequeños usan SharpOdinClient
+                                var singleFileList = new List<SharpOdinClient.structs.FileFlash> { file };
+                                success = await Odin.FlashFirmware(singleFileList, GetPit.Pit, EfsClearInt, BootUpdateInt, true);
+                            }
+                            
+                            if (success)
                             {
                                 Log?.Invoke("Ok", MsgType.Result);
                                 
@@ -373,30 +409,31 @@ namespace Odin_Flash.Controls
                                 
                                 try
                                 {
-                                    // Nota: SharpOdinClient maneja su propio puerto serial
-                                    // Intentamos recuperar usando Win32Comm si es posible acceder al puerto
-                                    // Si OdinEngine tiene acceso directo, usamos su método de recuperación
-                                    if (OdinEngine != null)
+                                    // Intentar recuperar el puerto
+                                    var port = OdinEngine?.GetCurrentPort();
+                                    if (port != null && port.IsOpen)
                                     {
-                                        // Intentar recuperar usando OdinEngine (usa Win32Comm internamente)
+                                        // Tenemos acceso directo al puerto - usar Win32Comm
+                                        Win32Comm.ResetPort(port);
+                                        Log?.Invoke("Puerto recuperado usando Win32Comm", MsgType.Result);
+                                    }
+                                    else if (OdinEngine != null)
+                                    {
+                                        // Intentar recuperar usando OdinEngine (puede funcionar aunque no tengamos acceso directo)
                                         bool recovered = await Task.Run(() => OdinEngine.RecoverPortAfterError());
-                                        
                                         if (recovered)
                                         {
                                             Log?.Invoke("Puerto recuperado y protocolo LOKE re-sincronizado", MsgType.Result);
-                                            Log?.Invoke("Reintentando archivo...", MsgType.Message);
-                                            // Opcional: Reintentar el envío del archivo que falló
-                                            // Por ahora marcamos como fallido pero continuamos
-                                            // para evitar bucles infinitos en archivos grandes
                                         }
                                         else
                                         {
-                                            Log?.Invoke("No se pudo recuperar el puerto completamente", MsgType.Result, true);
+                                            Log?.Invoke("Esperando estabilización del puerto...", MsgType.Message);
+                                            await Task.Delay(2000);
                                         }
                                     }
                                     else
                                     {
-                                        // Si no hay OdinEngine, hacer delay y continuar
+                                        // Si no hay OdinEngine, solo esperar
                                         Log?.Invoke("Esperando estabilización del puerto...", MsgType.Message);
                                         await Task.Delay(2000);
                                     }
@@ -404,6 +441,8 @@ namespace Odin_Flash.Controls
                                 catch (Exception recoveryEx)
                                 {
                                     Log?.Invoke($"Error durante recuperación: {recoveryEx.Message}", MsgType.Result, true);
+                                    // Continuar de todas formas
+                                    await Task.Delay(2000);
                                 }
                                 
                                 // Después de intentar recuperar, decidir si continuar o detener
@@ -412,7 +451,6 @@ namespace Odin_Flash.Controls
                                 {
                                     Log?.Invoke("Archivo grande falló. Continuando con siguiente archivo...", MsgType.Message);
                                     // Continuar con el siguiente archivo en lugar de detener todo
-                                    // El usuario puede reintentar manualmente si es necesario
                                 }
                                 else
                                 {
