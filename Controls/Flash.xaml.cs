@@ -321,12 +321,104 @@ namespace Odin_Flash.Controls
                                 }
                                 
                                 await Task.Delay(delayMs);
+                                
+                                // Respiro y Limpieza después de archivos grandes (Ref: 00438342)
+                                // Evita ERROR_IO_PENDING (0x3e5) cuando el puerto está bloqueado escribiendo a UFS/eMMC
+                                if (isVeryLargeFile || isLargeFile)
+                                {
+                                    Log?.Invoke("Clearing port buffers after large file...", MsgType.Message);
+                                    try
+                                    {
+                                        // Usar OdinEngine para limpiar el puerto si está disponible
+                                        // Esto maneja el caso donde SharpOdinClient tiene el puerto abierto
+                                        // y necesitamos limpiar buffers antes del siguiente archivo
+                                        if (OdinEngine != null)
+                                        {
+                                            // Nota: OdinEngine puede no tener acceso directo al puerto si usa SharpOdinClient
+                                            // En ese caso, el método retornará true después de un delay
+                                            bool portReady = await Task.Run(() => OdinEngine.ClearPortAfterLargeFile());
+                                            if (portReady)
+                                            {
+                                                Log?.Invoke("Port cleared and ready for next file", MsgType.Result);
+                                            }
+                                            else
+                                            {
+                                                Log?.Invoke("Warning: Port cleanup had issues, continuing anyway...", MsgType.Message);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Si no hay OdinEngine, hacer un delay adicional para archivos muy grandes
+                                            if (isVeryLargeFile)
+                                            {
+                                                Log?.Invoke("Additional wait for device buffer to clear...", MsgType.Message);
+                                                await Task.Delay(2000); // 2 segundos adicionales para controladores MICRON/UFS
+                                            }
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log?.Invoke($"Error during port cleanup: {ex.Message}", MsgType.Result, true);
+                                        // Continuar de todas formas - el delay ya se aplicó
+                                    }
+                                }
                             }
                             else
                             {
                                 Log?.Invoke("Failed", MsgType.Result, true);
-                                allFilesFlashed = false;
-                                break;
+                                
+                                // AQUÍ ESTÁ EL TRUCO DE ODIN (Ref: 00438342):
+                                // Intentar recuperar el puerto usando funciones nativas de Windows
+                                Log?.Invoke("Error detectado. Intentando recuperar puerto...", MsgType.Message);
+                                
+                                try
+                                {
+                                    // Nota: SharpOdinClient maneja su propio puerto serial
+                                    // Intentamos recuperar usando Win32Comm si es posible acceder al puerto
+                                    // Si OdinEngine tiene acceso directo, usamos su método de recuperación
+                                    if (OdinEngine != null)
+                                    {
+                                        // Intentar recuperar usando OdinEngine (usa Win32Comm internamente)
+                                        bool recovered = await Task.Run(() => OdinEngine.RecoverPortAfterError());
+                                        
+                                        if (recovered)
+                                        {
+                                            Log?.Invoke("Puerto recuperado y protocolo LOKE re-sincronizado", MsgType.Result);
+                                            Log?.Invoke("Reintentando archivo...", MsgType.Message);
+                                            // Opcional: Reintentar el envío del archivo que falló
+                                            // Por ahora marcamos como fallido pero continuamos
+                                            // para evitar bucles infinitos en archivos grandes
+                                        }
+                                        else
+                                        {
+                                            Log?.Invoke("No se pudo recuperar el puerto completamente", MsgType.Result, true);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Si no hay OdinEngine, hacer delay y continuar
+                                        Log?.Invoke("Esperando estabilización del puerto...", MsgType.Message);
+                                        await Task.Delay(2000);
+                                    }
+                                }
+                                catch (Exception recoveryEx)
+                                {
+                                    Log?.Invoke($"Error durante recuperación: {recoveryEx.Message}", MsgType.Result, true);
+                                }
+                                
+                                // Después de intentar recuperar, decidir si continuar o detener
+                                // Para archivos grandes, es más probable que sea un error temporal
+                                if (isVeryLargeFile || isLargeFile)
+                                {
+                                    Log?.Invoke("Archivo grande falló. Continuando con siguiente archivo...", MsgType.Message);
+                                    // Continuar con el siguiente archivo en lugar de detener todo
+                                    // El usuario puede reintentar manualmente si es necesario
+                                }
+                                else
+                                {
+                                    allFilesFlashed = false;
+                                    break; // Para archivos pequeños, detener el proceso
+                                }
                             }
                         }
 

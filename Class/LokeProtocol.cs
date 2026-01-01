@@ -112,7 +112,9 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Envía datos en segmentos grandes de 128KB (0x20000) para archivos de imagen
-        /// Optimizado para transferencias de firmware grandes (system.img, boot.img, etc.)
+        /// Optimizado para transferencias de firmware grandes (system.img, boot.img, super.img, etc.)
+        /// IMPORTANTE: Usa máximo 131,072 bytes (CHUNK_DATA) por bloque para evitar saturación de Windows
+        /// Si se usa un buffer mayor a 1MB en C#, Windows se satura (Ref: análisis de super.img 6.5GB)
         /// </summary>
         /// <param name="port">Puerto serial abierto y configurado</param>
         /// <param name="data">Datos a enviar</param>
@@ -125,6 +127,14 @@ namespace Odin_Flash.Class
             int total = data.Length;
             int chunks = (total + CHUNK_DATA - 1) / CHUNK_DATA;
 
+            // Asegurar que nunca excedamos 1MB por operación (Windows se satura)
+            // CHUNK_DATA (131,072 bytes) está bien por debajo del límite
+            const int MAX_SAFE_CHUNK = 1024 * 1024; // 1MB máximo
+            if (CHUNK_DATA > MAX_SAFE_CHUNK)
+            {
+                throw new InvalidOperationException($"CHUNK_DATA ({CHUNK_DATA}) excede el límite seguro de {MAX_SAFE_CHUNK} bytes");
+            }
+
             for (int i = 0; i < chunks; i++)
             {
                 int offset = i * CHUNK_DATA;
@@ -132,12 +142,13 @@ namespace Odin_Flash.Class
 
                 try
                 {
+                    // Escribir exactamente CHUNK_DATA bytes (131,072) - nunca más
                     port.Write(data, offset, count);
                     
                     // Delay pequeño entre bloques grandes
                     Thread.Sleep(10);
                     
-                    // Verificar ACK si está disponible
+                    // Verificar ACK si está disponible (no bloqueante)
                     if (port.BytesToRead > 0)
                     {
                         int ack = port.ReadByte();

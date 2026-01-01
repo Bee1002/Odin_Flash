@@ -212,6 +212,7 @@
     <Compile Include="Class\LokeProtocol.cs" />
     <Compile Include="Class\OdinEngine.cs" />
     <Compile Include="Class\ScreenCapture.cs" />
+    <Compile Include="Class\Win32Comm.cs" />
     <Compile Include="Controls\Flash.xaml.cs">
       <DependentUpon>Flash.xaml</DependentUpon>
     </Compile>

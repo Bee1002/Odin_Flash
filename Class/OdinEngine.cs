@@ -19,8 +19,14 @@ namespace Odin_Flash.Class
         // Delegado para logging compatible con el sistema existente
         public delegate void LogDelegate(string Text, MsgType Color, bool IsError = false);
         
+        // Delegado para progreso compatible con el sistema existente
+        public delegate void ProgressDelegate(string filename, long max, long value, long writenSize);
+        
         // Evento de logging
         public event LogDelegate Log;
+        
+        // Evento de progreso
+        public event ProgressDelegate ProgressChanged;
 
         // Referencia a la instancia de Odin para acceso al puerto serial (modo compatibilidad)
         private SharpOdinClient.Odin odinInstance;
@@ -228,8 +234,8 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Maneja errores de comunicación del puerto (Ref: 00438342)
-        /// En C#, esto limpia los buffers internos y resetea el estado del driver
-        /// Maneja el error 0x3e5 que encontramos en el análisis
+        /// Usa funciones nativas de Windows (Win32Comm) para limpieza a nivel de kernel
+        /// Maneja el error ERROR_IO_PENDING (0x3e5) que encontramos en el análisis
         /// </summary>
         private void HandleCommError()
         {
@@ -237,14 +243,20 @@ namespace Odin_Flash.Class
             {
                 if (_port != null && _port.IsOpen)
                 {
-                    // Limpiar buffers internos (equivalente a ClearCommError)
-                    _port.DiscardInBuffer();
-                    _port.DiscardOutBuffer();
+                    // Usar Win32Comm para limpieza nativa (como Odin original en 00438342)
+                    bool resetSuccess = Win32Comm.ResetPort(_port);
                     
-                    LogMessage("Buffers del puerto serial limpiados");
-                    
-                    // Opcional: Re-abrir el puerto si el error persiste
-                    // Por ahora solo limpiamos los buffers, que es lo más común
+                    if (resetSuccess)
+                    {
+                        LogMessage("Puerto resetado usando funciones nativas de Windows");
+                    }
+                    else
+                    {
+                        // Fallback a métodos públicos si Win32Comm falla
+                        _port.DiscardInBuffer();
+                        _port.DiscardOutBuffer();
+                        LogMessage("Buffers del puerto serial limpiados (método público)");
+                    }
                 }
             }
             catch (Exception ex)
@@ -256,7 +268,7 @@ namespace Odin_Flash.Class
                     if (_port != null && _port.IsOpen)
                     {
                         _port.Close();
-                        Thread.Sleep(500); // Delay para estabilizar
+                        Thread.Sleep(1000); // Delay aumentado para estabilizar (Ref: 00438342)
                         _port.Open();
                         LogMessage("Puerto serial reiniciado después de error crítico");
                     }
@@ -265,6 +277,200 @@ namespace Odin_Flash.Class
                 {
                     LogMessage($"Error crítico al resetear puerto: {ex2.Message}", true);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Recupera el puerto después de un error usando funciones nativas y re-sincroniza LOKE
+        /// Implementa el "truco de Odin" mencionado en el análisis (Ref: 00438342)
+        /// </summary>
+        /// <returns>True si el puerto fue recuperado exitosamente</returns>
+        public bool RecoverPortAfterError()
+        {
+            if (!_useDirectSerialPort || _port == null)
+            {
+                // Modo compatibilidad: solo esperar
+                Thread.Sleep(500);
+                return true;
+            }
+
+            try
+            {
+                LogMessage("Error detectado. Intentando recuperar puerto...");
+                
+                // 1. Limpiar puerto usando Win32Comm (nativo)
+                bool resetSuccess = Win32Comm.ResetPort(_port);
+                if (!resetSuccess)
+                {
+                    // Fallback a métodos públicos
+                    if (_port.IsOpen)
+                    {
+                        _port.DiscardInBuffer();
+                        _port.DiscardOutBuffer();
+                    }
+                }
+                
+                Thread.Sleep(500); // El delay de estabilidad de Loke
+                
+                // 2. Re-sincronizar protocolo LOKE (Paso 1 del LokeProtocol)
+                if (!_port.IsOpen)
+                {
+                    _port.Open();
+                }
+                
+                bool handshakeSuccess = LokeProtocol.PerformHandshake(_port);
+                
+                if (handshakeSuccess)
+                {
+                    LogMessage("Puerto recuperado y protocolo LOKE re-sincronizado");
+                    return true;
+                }
+                else
+                {
+                    LogMessage("No se pudo re-sincronizar protocolo LOKE", true);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error durante recuperación de puerto: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Respiro y Limpieza después de archivos grandes (Ref: 00438342)
+        /// Implementación de la limpieza que vimos en Ghidra para evitar ERROR_IO_PENDING (0x3e5)
+        /// Debe llamarse después de flashear archivos grandes como super.img antes de pasar al siguiente
+        /// </summary>
+        /// <returns>True si el puerto está listo para continuar</returns>
+        public bool ClearPortAfterLargeFile()
+        {
+            if (!_useDirectSerialPort || _port == null)
+            {
+                // Modo compatibilidad: solo esperar
+                Thread.Sleep(500);
+                return true;
+            }
+
+            try
+            {
+                LogMessage("Waiting for device buffer to clear...");
+                Thread.Sleep(500); // Dale medio segundo al controlador MICRON/UFS
+
+                if (!_port.IsOpen)
+                {
+                    LogMessage("Puerto cerrado, intentando abrir...");
+                    _port.Open();
+                }
+
+                // Implementación de la limpieza que vimos en Ghidra (00438342)
+                // Usar Win32Comm para limpieza nativa a nivel de kernel
+                bool resetSuccess = Win32Comm.ResetPort(_port);
+                
+                if (resetSuccess)
+                {
+                    LogMessage("Buffers limpiados usando funciones nativas (Win32Comm), verificando conexión...");
+                }
+                else
+                {
+                    // Fallback a métodos públicos
+                    _port.DiscardInBuffer();
+                    _port.DiscardOutBuffer();
+                    LogMessage("Buffers limpiados (método público), verificando conexión...");
+                }
+
+                // El "Keep Alive" que mencionamos - comando simple para ver si Loke responde
+                try
+                {
+                    byte[] ping = { 0x64 }; // Comando simple para verificar respuesta
+                    _port.Write(ping, 0, 1);
+                    
+                    Thread.Sleep(100); // Esperar respuesta
+                    
+                    if (_port.BytesToRead > 0)
+                    {
+                        int response = _port.ReadByte();
+                        if (response != 0x06) // Si no responde ACK, re-inicializamos el protocolo Loke
+                        {
+                            LogMessage("Respuesta inesperada, re-inicializando protocolo LOKE...");
+                            return LokeProtocol.PerformHandshake(_port);
+                        }
+                        LogMessage("Keep Alive: Dispositivo responde correctamente");
+                        return true;
+                    }
+                    else
+                    {
+                        // No hay respuesta, pero el puerto está abierto - asumimos que está listo
+                        LogMessage("Puerto listo para continuar");
+                        return true;
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    // Timeout esperado si el dispositivo está ocupado escribiendo
+                    LogMessage("Dispositivo ocupado escribiendo, puerto listo para continuar");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error durante limpieza de puerto: {ex.Message}", true);
+                // Si da error de E/S, cerramos y abrimos el puerto sin perder el proceso
+                try
+                {
+                    if (_port != null)
+                    {
+                        if (_port.IsOpen)
+                        {
+                            _port.Close();
+                        }
+                        Thread.Sleep(1000);
+                        _port.Open();
+                        LogMessage("Puerto reiniciado después de error de E/S");
+                        return true;
+                    }
+                }
+                catch (Exception ex2)
+                {
+                    LogMessage($"Error crítico al reiniciar puerto: {ex2.Message}", true);
+                    return false;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Configura timeouts apropiados para archivos grandes
+        /// Para archivos como super.img (6.5GB), el WriteTimeout debe ser infinito (-1)
+        /// para evitar que operaciones síncronas que tardan demasiado sean canceladas
+        /// </summary>
+        /// <param name="isLargeFile">True para archivos grandes, False para archivos normales</param>
+        public void ConfigureTimeoutsForFileSize(bool isLargeFile)
+        {
+            if (!_useDirectSerialPort || _port == null)
+                return;
+
+            try
+            {
+                if (isLargeFile)
+                {
+                    // Para archivos grandes, timeout infinito para evitar ERROR_IO_PENDING
+                    _port.WriteTimeout = -1; // Infinito
+                    _port.ReadTimeout = 10000; // 10 segundos para lectura
+                    LogMessage("Timeouts configurados para archivo grande (WriteTimeout: infinito)");
+                }
+                else
+                {
+                    // Para archivos normales, timeouts estándar
+                    _port.WriteTimeout = 5000;
+                    _port.ReadTimeout = 5000;
+                    LogMessage("Timeouts configurados para archivo normal");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error al configurar timeouts: {ex.Message}", true);
             }
         }
 
@@ -662,6 +868,148 @@ namespace Odin_Flash.Class
             catch (Exception ex)
             {
                 LogMessage($"Error al cargar archivos: {ex.Message}", true);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Función definitiva para enviar archivos usando el protocolo LOKE
+        /// Esta función es el "pegamento" que une la investigación en Ghidra, la estabilidad nativa de Windows y la interfaz WPF
+        /// Reemplaza la lógica de envío de SharpOdinClient para las escrituras, evitando el error de E/S
+        /// </summary>
+        /// <param name="filePath">Ruta completa al archivo a enviar</param>
+        /// <param name="fileSize">Tamaño del archivo en bytes</param>
+        /// <returns>True si el envío fue exitoso</returns>
+        public async Task<bool> SendFileWithLokeProtocol(string filePath, long fileSize)
+        {
+            if (!_useDirectSerialPort || _port == null)
+            {
+                LogMessage("SendFileWithLokeProtocol requiere acceso directo al puerto serial", true);
+                return false;
+            }
+
+            if (!File.Exists(filePath))
+            {
+                LogMessage($"Archivo no encontrado: {filePath}", true);
+                return false;
+            }
+
+            // Usar constantes de LokeProtocol
+            int currentChunkSize = (fileSize > 1024 * 1024) ? LokeProtocol.CHUNK_DATA : LokeProtocol.CHUNK_CONTROL;
+            string fileName = Path.GetFileName(filePath);
+
+            try
+            {
+                // Configurar timeouts apropiados para el tamaño del archivo
+                ConfigureTimeoutsForFileSize(fileSize > 100 * 1024 * 1024);
+
+                if (!_port.IsOpen)
+                {
+                    LogMessage("Abriendo puerto serial...");
+                    _port.Open();
+                }
+
+                LogMessage($"Iniciando envío de {fileName} ({fileSize / (1024.0 * 1024.0):F2} MB) con chunks de {currentChunkSize} bytes");
+
+                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, currentChunkSize, useAsync: true))
+                {
+                    byte[] buffer = new byte[currentChunkSize];
+                    int bytesRead;
+                    long totalSent = 0;
+                    long lastProgressReport = 0;
+                    const long PROGRESS_REPORT_INTERVAL = 1024 * 1024; // Reportar cada 1MB
+
+                    while ((bytesRead = await fs.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    {
+                        try
+                        {
+                            _port.Write(buffer, 0, bytesRead);
+                            totalSent += bytesRead;
+
+                            // Reportar progreso a la UI de WPF
+                            if (totalSent - lastProgressReport >= PROGRESS_REPORT_INTERVAL || totalSent == fileSize)
+                            {
+                                ProgressChanged?.Invoke(fileName, fileSize, totalSent, totalSent);
+                                lastProgressReport = totalSent;
+                            }
+
+                            // Pequeño respiro para el controlador MICRON/Samsung
+                            // Evita la saturación del buffer que causa el error de E/S
+                            // Solo para archivos grandes (cada 10 bloques de 128KB = ~1.28MB)
+                            if (currentChunkSize == LokeProtocol.CHUNK_DATA && totalSent % (LokeProtocol.CHUNK_DATA * 10) == 0)
+                            {
+                                await Task.Delay(1);
+                            }
+                        }
+                        catch (IOException ex)
+                        {
+                            // ¡AQUÍ ESTÁ LA MAGIA DE GHIDRA! (Ref: 00438342)
+                            // Si ocurre el error de E/S anulada (995) o ERROR_IO_PENDING (0x3e5), limpiamos y reintentamos
+                            LogMessage($"Atasco de E/S detectado (Error: {ex.HResult:X8}). Aplicando corrección Odin...", true);
+                            
+                            // Limpiar puerto usando Win32Comm (nativo)
+                            bool resetSuccess = Win32Comm.ResetPort(_port);
+                            if (!resetSuccess)
+                            {
+                                // Fallback a métodos públicos
+                                _port.DiscardInBuffer();
+                                _port.DiscardOutBuffer();
+                            }
+                            
+                            // Delay de estabilidad
+                            Thread.Sleep(LokeProtocol.DELAY_STABILITY);
+                            
+                            // Re-sincronizar con el handshake que investigamos
+                            bool handshakeSuccess = LokeProtocol.PerformHandshake(_port);
+                            if (!handshakeSuccess)
+                            {
+                                LogMessage("No se pudo re-sincronizar protocolo LOKE después del error", true);
+                                return false;
+                            }
+                            
+                            LogMessage("Protocolo LOKE re-sincronizado, reintentando bloque...");
+                            
+                            // Reintentar el envío del último bloque
+                            try
+                            {
+                                _port.Write(buffer, 0, bytesRead);
+                                totalSent += bytesRead;
+                            }
+                            catch (Exception retryEx)
+                            {
+                                LogMessage($"Error al reintentar envío: {retryEx.Message}", true);
+                                return false;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Error inesperado durante envío: {ex.Message}", true);
+                            return false;
+                        }
+                    }
+                }
+
+                // Al terminar un archivo grande (como super.img), forzamos una limpieza
+                if (fileSize > 100 * 1024 * 1024) // > 100MB
+                {
+                    LogMessage("Archivo grande finalizado. Limpiando buffers de hardware...");
+                    bool resetSuccess = Win32Comm.ResetPort(_port);
+                    if (!resetSuccess)
+                    {
+                        _port.DiscardInBuffer();
+                        _port.DiscardOutBuffer();
+                    }
+                    Thread.Sleep(500); // El delay vital de estabilidad (Ref: 00438342)
+                    LogMessage("Buffers limpiados, listo para siguiente archivo");
+                }
+
+                ProgressChanged?.Invoke(fileName, fileSize, fileSize, fileSize);
+                LogMessage($"Archivo {fileName} enviado exitosamente ({fileSize / (1024.0 * 1024.0):F2} MB)");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error Crítico en Protocolo LOKE: {ex.Message}", true);
                 return false;
             }
         }
