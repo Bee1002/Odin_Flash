@@ -963,6 +963,87 @@ namespace Odin_Flash.Class
         }
 
         /// <summary>
+        /// Envía el paquete de apertura de sesión usando el formato correcto de Ghidra (FUN_004324d0)
+        /// Estructura del paquete:
+        /// - Byte 0: 0x64 (OpCode para 'Open Session')
+        /// - Bytes 1-3: 0x00, 0x00, 0x00 (padding/reservado)
+        /// - Bytes 4-7: "ODIN" (magic string)
+        /// - Bytes 8-499: 0x00 (resto del paquete)
+        /// 
+        /// La diferencia clave con SendOdinHandshake() es que este método usa el OpCode 0x64 al inicio,
+        /// que es lo que el chip UART de Samsung espera para activar el modo de transferencia.
+        /// </summary>
+        /// <returns>True si la sesión se abrió correctamente (recibió ACK 0x06)</returns>
+        public async Task<bool> SendOpenSession()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para abrir sesión", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                // Odin siempre usa paquetes de 500 bytes (0x1F4)
+                byte[] packet = new byte[500];
+
+                // Header del Protocolo Loke según Ghidra FUN_004324d0(0x64, ...)
+                packet[0] = 0x64; // OpCode para 'Open Session' (confirmado en Ghidra)
+                
+                // Bytes 1-3: Padding/Reservado (ya están en 0x00 por defecto)
+                
+                // El resto del paquete suele ir en 0x00 para el handshake inicial,
+                // pero algunos modelos requieren la palabra 'ODIN' al final del header.
+                byte[] magic = System.Text.Encoding.ASCII.GetBytes("ODIN");
+                Array.Copy(magic, 0, packet, 4, magic.Length); // Copiar "ODIN" en offset 4
+
+                // Bytes 8-499: Resto del paquete con 0x00 (ya inicializado por defecto)
+
+                Log("Enviando paquete de apertura de sesión (0x64)...", LogLevel.Info);
+                
+                _port.Write(packet, 0, 500);
+
+                // Esperar respuesta: El teléfono debe devolver un ACK (0x06) 
+                // o un paquete que empiece por 0x64 (Sesión aceptada)
+                byte[] response = new byte[1];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 2000;
+                
+                try
+                {
+                    int bytesRead = await Task.Run(() => _port.Read(response, 0, 1));
+
+                    if (bytesRead > 0 && response[0] == 0x06) // 0x06 es ACK (Acknowledge)
+                    {
+                        Log("<ID:0/001> Handshake Successful! Session Opened.", LogLevel.Success);
+                        return true;
+                    }
+                    else if (bytesRead > 0 && response[0] == 0x64)
+                    {
+                        // Algunos modelos responden con 0x64 (Sesión aceptada)
+                        Log("<ID:0/001> Handshake Successful! Session Opened (0x64 response).", LogLevel.Success);
+                        return true;
+                    }
+                    else
+                    {
+                        Log($"Respuesta inesperada: 0x{response[0]:X2}", LogLevel.Warning);
+                        return false;
+                    }
+                }
+                finally
+                {
+                    // Restaurar timeout original
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Fallo en la respuesta del hardware: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Detecta y conecta al dispositivo Samsung en un solo flujo completo
         /// Integra: detección de puerto, inicialización de conexión y handshake
         /// Flujo completo basado en el análisis de Ghidra
