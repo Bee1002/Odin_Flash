@@ -115,8 +115,14 @@ namespace Odin_Flash.Class
 
             try
             {
-                // Obtener información básica del dispositivo
-                string portName = engine.GetCurrentPort()?.PortName ?? "Unknown";
+                // Obtener información básica del dispositivo usando detección WMI robusta
+                // Usar GetSamsungDownloadPort() para obtener el puerto real detectado por VID/PID
+                string portName = engine.GetSamsungDownloadPort();
+                if (portName == "Unknown")
+                {
+                    // Fallback al puerto actual si la detección WMI falla
+                    portName = engine.GetCurrentPort()?.PortName ?? "Unknown";
+                }
                 engine.ReportLog($"Device Port: {portName}", LogLevel.Info);
                 engine.ReportLog($"Protocol: LOKE (Native Implementation)", LogLevel.Info);
             }

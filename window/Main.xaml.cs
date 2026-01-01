@@ -36,6 +36,7 @@ namespace Odin_Flash.window
             Flash.Log += Flash_Log;
             Flash.ProgressChanged += Flash_ProgressChanged;
             Flash.IsRunning += Flash_IsRunning;
+            Flash.PortDetected += Flash_PortDetected;
             FrmMain.Navigate(Flash);
         }
 
@@ -45,6 +46,17 @@ namespace Odin_Flash.window
             {
                 Flash.ControlsManage(IsRunning);
                 BtnStop.IsEnabled = IsRunning;
+            });
+        }
+
+        /// <summary>
+        /// Maneja la detección de puerto COM y actualiza el TextBox en la UI
+        /// </summary>
+        private void Flash_PortDetected(string portName)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                TxtPort.Text = portName ?? "Unknown";
             });
         }
 

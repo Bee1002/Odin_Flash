@@ -63,10 +63,16 @@
                 <Grid.ColumnDefinitions >
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="auto"/>
+                    <ColumnDefinition Width="auto"/>
                 </Grid.ColumnDefinitions>
                 <Button Margin="5" Grid.Column="0" Name="BtnFlash" Click="BtnFlash_Click" Content="Flash"/>
                 <Button Margin="5"
                             Grid.Column="1"
+                            Name="BtnDetect"
+                            Click="OnDetectButtonClick"
+                            Content="Detect" />
+                <Button Margin="5"
+                            Grid.Column="2"
                             Name="BtnReadPit"
                             Click="BtnReadPit_Click"
                             Content="Read PIT" />

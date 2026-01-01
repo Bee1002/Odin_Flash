@@ -30,9 +30,12 @@ namespace Odin_Flash.Controls
         public FlashField CSCPackage = new FlashField("CSC file package [tar,md5]");
         public OdinEngine OdinEngine; // Motor de protocolo Odin basado en análisis original
 
+        private bool _continueMonitoring = true; // Control del bucle de monitoreo de puertos
+
         public event Action<long, long> ProgressChanged;
         public event Action<string, LogLevel> Log;
         public event Odin_Flash.Util.Util.IsRunningProcessDelegate IsRunning;
+        public event Action<string> PortDetected; // Evento para notificar cuando se detecta un puerto
 
         public Flash()
         {
@@ -52,6 +55,9 @@ namespace Odin_Flash.Controls
 
             // OdinEngine se inicializará cuando se detecte el puerto COM
             OdinEngine = null;
+
+            // Iniciar monitoreo de puertos en segundo plano
+            StartPortMonitoring();
         }
 
         /// <summary>
@@ -117,22 +123,256 @@ namespace Odin_Flash.Controls
                     return result.portName;
                 }
                 
-                // Último fallback: buscar puertos COM disponibles
-                return System.IO.Ports.SerialPort.GetPortNames().FirstOrDefault();
+                // Último fallback: usar detección WMI robusta basada en VID/PID
+                // Crear instancia temporal para usar GetSamsungDownloadPort()
+                try
+                {
+                    using (var tempEngine = new Odin_Flash.Class.OdinEngine("COM1")) // Puerto temporal, no se usará
+                    {
+                        string detectedPort = tempEngine.GetSamsungDownloadPort();
+                        if (detectedPort != "Unknown")
+                        {
+                            return detectedPort;
+                        }
+                    }
+                }
+                catch { }
+                
+                // Si todo falla, retornar null
+                return null;
             }
             catch
             {
+                // Último intento con detección WMI
                 try
                 {
-                    return System.IO.Ports.SerialPort.GetPortNames().FirstOrDefault();
+                    using (var tempEngine = new Odin_Flash.Class.OdinEngine("COM1"))
+                    {
+                        string detectedPort = tempEngine.GetSamsungDownloadPort();
+                        if (detectedPort != "Unknown")
+                        {
+                            return detectedPort;
+                        }
+                    }
                 }
-                catch
-                {
-                    return null;
-                }
+                catch { }
+                
+                return null;
             }
         }
 
+        /// <summary>
+        /// Inicia el monitoreo continuo de puertos Samsung en segundo plano
+        /// Vigila los puertos USB y actualiza el estado cuando se detecta o se desconecta un dispositivo
+        /// </summary>
+        private async void StartPortMonitoring()
+        {
+            // Ejecutar el monitoreo en segundo plano sin bloquear la UI
+            await Task.Run(async () =>
+            {
+                string currentPortStatus = "Unknown"; // Rastrea el estado actual del puerto
+
+                while (_continueMonitoring)
+                {
+                    try
+                    {
+                        // Usar instancia temporal para detectar puerto (OdinEngine puede ser null)
+                        string detectedPort = null;
+                        using (var tempEngine = new OdinEngine("COM1")) // Puerto temporal, solo para detección
+                        {
+                            // Primero intentar detección rápida por WMI
+                            detectedPort = tempEngine.GetSamsungPort();
+                            
+                            // Si falla, usar escaneo agresivo como fallback
+                            if (detectedPort == null)
+                            {
+                                detectedPort = await tempEngine.DetectOdinPortAsync();
+                            }
+                        }
+
+                        // FASE 1: Detección física - Si detectamos un puerto y el estado actual es "Unknown"
+                        if (detectedPort != null && currentPortStatus == "Unknown")
+                        {
+                            // Actualizar UI con el puerto detectado
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                PortDetected?.Invoke(detectedPort);
+                                Log?.Invoke($"<ID:0/001> Added!! Port: {detectedPort}", LogLevel.Success);
+                            });
+
+                            // FASE 2: Intentar Handshake real (Evita que se mueva a "Removed")
+                            // Usar OdinEngine existente o crear uno nuevo para el handshake
+                            bool handshakeSuccess = false;
+                            
+                            if (OdinEngine == null)
+                            {
+                                // Crear instancia temporal solo para el handshake
+                                using (var tempEngine = new OdinEngine(detectedPort))
+                                {
+                                    handshakeSuccess = await tempEngine.InitializeAndHandshake(detectedPort);
+                                }
+                                
+                                // Si el handshake fue exitoso, inicializar OdinEngine permanente
+                                if (handshakeSuccess)
+                                {
+                                    await Application.Current.Dispatcher.InvokeAsync(() =>
+                                    {
+                                        InitializeOdinEngine(detectedPort);
+                                    });
+                                    currentPortStatus = detectedPort;
+                                }
+                            }
+                            else
+                            {
+                                // Usar OdinEngine existente para el handshake
+                                handshakeSuccess = await OdinEngine.InitializeAndHandshake(detectedPort);
+                                
+                                if (handshakeSuccess)
+                                {
+                                    currentPortStatus = detectedPort;
+                                }
+                            }
+
+                            if (!handshakeSuccess)
+                            {
+                                // Si el handshake falla, lo forzamos a Removed para reintentar
+                                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                {
+                                    PortDetected?.Invoke("Unknown");
+                                    Log?.Invoke("<ID:0/001> Handshake Failed. Retrying...", LogLevel.Warning);
+                                });
+                                currentPortStatus = "Unknown";
+                                
+                                // Cerrar puerto si está abierto
+                                if (OdinEngine != null)
+                                {
+                                    OdinEngine.ClosePort();
+                                }
+                            }
+                        }
+                        // FASE 3: Si no se detecta puerto y antes había uno conectado
+                        else if (detectedPort == null && currentPortStatus != "Unknown")
+                        {
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                PortDetected?.Invoke("Unknown");
+                                Log?.Invoke("<ID:0/001> Removed!!", LogLevel.Warning);
+                                
+                                // Cerrar puerto y limpiar OdinEngine
+                                if (OdinEngine != null)
+                                {
+                                    OdinEngine.ClosePort();
+                                    OdinEngine?.Dispose();
+                                    OdinEngine = null;
+                                }
+                            });
+                            
+                            currentPortStatus = "Unknown";
+                        }
+                        // FASE 4: Si el puerto detectado cambió (diferente COM)
+                        else if (detectedPort != null && currentPortStatus != "Unknown" && detectedPort != currentPortStatus)
+                        {
+                            // Cerrar el puerto anterior
+                            if (OdinEngine != null)
+                            {
+                                OdinEngine.ClosePort();
+                                OdinEngine?.Dispose();
+                            }
+                            
+                            // Actualizar UI con el nuevo puerto
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                PortDetected?.Invoke(detectedPort);
+                                Log?.Invoke($"<ID:0/001> Port Changed!! From {currentPortStatus} to {detectedPort}", LogLevel.Info);
+                            });
+                            
+                            // Intentar handshake en el nuevo puerto
+                            bool handshakeSuccess = false;
+                            using (var tempEngine = new OdinEngine(detectedPort))
+                            {
+                                handshakeSuccess = await tempEngine.InitializeAndHandshake(detectedPort);
+                            }
+                            
+                            if (handshakeSuccess)
+                            {
+                                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                {
+                                    InitializeOdinEngine(detectedPort);
+                                });
+                                currentPortStatus = detectedPort;
+                            }
+                            else
+                            {
+                                await Application.Current.Dispatcher.InvokeAsync(() =>
+                                {
+                                    PortDetected?.Invoke("Unknown");
+                                    Log?.Invoke("<ID:0/001> Handshake Failed on Port Change. Retrying...", LogLevel.Warning);
+                                });
+                                currentPortStatus = "Unknown";
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Manejar errores silenciosamente en el monitoreo
+                        // No queremos saturar el log con errores de monitoreo
+                    }
+
+                    // Escanear cada 2 segundos (aumentado según la nueva lógica)
+                    await Task.Delay(2000);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Detiene el monitoreo de puertos (útil para cleanup)
+        /// </summary>
+        public void StopPortMonitoring()
+        {
+            _continueMonitoring = false;
+        }
+
+        /// <summary>
+        /// Método para detectar manualmente el puerto Odin usando escaneo agresivo
+        /// Integra DetectOdinPortAsync() para buscar dispositivo en todos los puertos COM
+        /// Actualiza el TextBox del puerto y notifica a la UI
+        /// </summary>
+        private async void OnDetectButtonClick(object sender, RoutedEventArgs e)
+        {
+            Log?.Invoke("Escaneando puertos serie buscando respuesta LOKE...", LogLevel.Info);
+            
+            // Usar instancia temporal para el escaneo
+            string finalPort = null;
+            using (var tempEngine = new OdinEngine("COM1")) // Puerto temporal, solo para escaneo
+            {
+                finalPort = await tempEngine.DetectOdinPortAsync();
+            }
+            
+            if (finalPort != null)
+            {
+                // Notificar cambio de puerto para actualizar UI (actualizará TxtPort en Main.xaml)
+                PortDetected?.Invoke(finalPort);
+                
+                // Inicializar OdinEngine con el puerto detectado
+                if (OdinEngine == null)
+                {
+                    InitializeOdinEngine(finalPort);
+                }
+                else if (OdinEngine.GetCurrentPort()?.PortName != finalPort)
+                {
+                    OdinEngine?.Dispose();
+                    InitializeOdinEngine(finalPort);
+                }
+                
+                Log?.Invoke($"¡Dispositivo detectado en {finalPort}! Handshake exitoso.", LogLevel.Success);
+            }
+            else
+            {
+                // Notificar que no se encontró puerto
+                PortDetected?.Invoke("Unknown");
+                Log?.Invoke("Error: No se encontró ningún dispositivo Samsung en modo Download.", LogLevel.Error);
+            }
+        }
 
         public void ControlsManage(bool IsEnable)
         {
