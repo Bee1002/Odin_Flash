@@ -31,6 +31,7 @@ namespace Odin_Flash.Controls
         public OdinEngine OdinEngine; // Motor de protocolo Odin basado en análisis original
 
         private bool _continueMonitoring = true; // Control del bucle de monitoreo de puertos
+        private bool isDeviceConnected = false; // Rastrea si el dispositivo está conectado y con handshake exitoso
 
         public event Action<long, long> ProgressChanged;
         public event Action<string, LogLevel> Log;
@@ -99,6 +100,16 @@ namespace Odin_Flash.Controls
         {
             try
             {
+                // Si ya hay una sesión activa, usar el puerto actual
+                if (isDeviceConnected && OdinEngine != null)
+                {
+                    var currentPort = OdinEngine.GetCurrentPort();
+                    if (currentPort != null && currentPort.IsOpen)
+                    {
+                        return currentPort.PortName;
+                    }
+                }
+                
                 // Si OdinEngine ya está inicializado, verificar si el dispositivo está conectado
                 if (OdinEngine != null)
                 {
@@ -116,7 +127,7 @@ namespace Odin_Flash.Controls
                     }
                 }
                 
-                // Usar detección automática de OdinEngine (detecta por VID/PID)
+                // Solo usar detección automática si no hay sesión activa
                 var result = Task.Run(async () => await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync()).Result;
                 if (result.success && !string.IsNullOrEmpty(result.portName))
                 {
@@ -167,161 +178,142 @@ namespace Odin_Flash.Controls
         /// </summary>
         private async void StartPortMonitoring()
         {
-            // Ejecutar el monitoreo en segundo plano sin bloquear la UI
-            await Task.Run(async () =>
+            // En lugar de un Timer de WPF, usa un bucle asíncrono para no colapsar el puerto
+            while (_continueMonitoring)
             {
-                string currentPortStatus = "Unknown"; // Rastrea el estado actual del puerto
-
-                while (_continueMonitoring)
+                try
                 {
-                    try
+                    string portName = null;
+                    
+                    // Si ya hay una conexión activa, verificar el puerto actual en lugar de detectar de nuevo
+                    // Esto evita conflictos cuando el puerto está abierto por OdinEngine
+                    if (isDeviceConnected && OdinEngine != null)
                     {
+                        var currentPort = OdinEngine.GetCurrentPort();
+                        if (currentPort != null && currentPort.IsOpen)
+                        {
+                            portName = currentPort.PortName;
+                        }
+                        // Si el puerto está cerrado, portName será null y se detectará como desconectado
+                    }
+                    else
+                    {
+                        // Solo detectar puerto si no hay conexión activa
                         // Usar instancia temporal para detectar puerto (OdinEngine puede ser null)
-                        string detectedPort = null;
                         using (var tempEngine = new OdinEngine("COM1")) // Puerto temporal, solo para detección
                         {
                             // Primero intentar detección rápida por WMI
-                            detectedPort = tempEngine.GetSamsungPort();
+                            portName = tempEngine.GetSamsungPort();
                             
                             // Si falla, usar escaneo agresivo como fallback
-                            if (detectedPort == null)
+                            if (portName == null)
                             {
-                                detectedPort = await tempEngine.DetectOdinPortAsync();
+                                portName = await tempEngine.DetectOdinPortAsync();
                             }
                         }
+                    }
 
-                        // FASE 1: Detección física - Si detectamos un puerto y el estado actual es "Unknown"
-                        if (detectedPort != null && currentPortStatus == "Unknown")
+                    // Si detectamos un puerto y el dispositivo no está conectado
+                    if (portName != null && !isDeviceConnected)
+                    {
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
                         {
-                            // Actualizar UI con el puerto detectado
-                            await Application.Current.Dispatcher.InvokeAsync(() =>
-                            {
-                                PortDetected?.Invoke(detectedPort);
-                                Log?.Invoke($"<ID:0/001> Added!! Port: {detectedPort}", LogLevel.Success);
-                            });
+                            Log?.Invoke($"<ID:0/001> Added!! Port: {portName}", LogLevel.Info);
+                        });
 
-                            // FASE 2: Intentar Handshake real (Evita que se mueva a "Removed")
-                            // Usar OdinEngine existente o crear uno nuevo para el handshake
-                            bool handshakeSuccess = false;
-                            
-                            if (OdinEngine == null)
-                            {
-                                // Crear instancia temporal solo para el handshake
-                                using (var tempEngine = new OdinEngine(detectedPort))
-                                {
-                                    handshakeSuccess = await tempEngine.InitializeAndHandshake(detectedPort);
-                                }
-                                
-                                // Si el handshake fue exitoso, inicializar OdinEngine permanente
-                                if (handshakeSuccess)
-                                {
-                                    await Application.Current.Dispatcher.InvokeAsync(() =>
-                                    {
-                                        InitializeOdinEngine(detectedPort);
-                                    });
-                                    currentPortStatus = detectedPort;
-                                }
-                            }
-                            else
-                            {
-                                // Usar OdinEngine existente para el handshake
-                                handshakeSuccess = await OdinEngine.InitializeAndHandshake(detectedPort);
-                                
-                                if (handshakeSuccess)
-                                {
-                                    currentPortStatus = detectedPort;
-                                }
-                            }
-
-                            if (!handshakeSuccess)
-                            {
-                                // Si el handshake falla, lo forzamos a Removed para reintentar
-                                await Application.Current.Dispatcher.InvokeAsync(() =>
-                                {
-                                    PortDetected?.Invoke("Unknown");
-                                    Log?.Invoke("<ID:0/001> Handshake Failed. Retrying...", LogLevel.Warning);
-                                });
-                                currentPortStatus = "Unknown";
-                                
-                                // Cerrar puerto si está abierto
-                                if (OdinEngine != null)
-                                {
-                                    OdinEngine.ClosePort();
-                                }
-                            }
-                        }
-                        // FASE 3: Si no se detecta puerto y antes había uno conectado
-                        else if (detectedPort == null && currentPortStatus != "Unknown")
+                        // INTENTO DE CONEXIÓN REAL
+                        // Inicializar OdinEngine si no existe
+                        if (OdinEngine == null)
                         {
                             await Application.Current.Dispatcher.InvokeAsync(() =>
                             {
-                                PortDetected?.Invoke("Unknown");
-                                Log?.Invoke("<ID:0/001> Removed!!", LogLevel.Warning);
-                                
-                                // Cerrar puerto y limpiar OdinEngine
-                                if (OdinEngine != null)
-                                {
-                                    OdinEngine.ClosePort();
-                                    OdinEngine?.Dispose();
-                                    OdinEngine = null;
-                                }
+                                InitializeOdinEngine(portName);
                             });
-                            
-                            currentPortStatus = "Unknown";
                         }
-                        // FASE 4: Si el puerto detectado cambió (diferente COM)
-                        else if (detectedPort != null && currentPortStatus != "Unknown" && detectedPort != currentPortStatus)
+
+                        // Usar StartSession para iniciar sesión completa: inicializar, handshake y solicitar info
+                        // Esto mantiene la conexión activa y evita que el teléfono se desconecte
+                        if (await OdinEngine.StartSession(portName))
                         {
-                            // Cerrar el puerto anterior
+                            isDeviceConnected = true;
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                PortDetected?.Invoke(portName);
+                            });
+                            // Aquí el puerto se queda ABIERTO y estable con sesión activa
+                        }
+                        else
+                        {
+                            await Application.Current.Dispatcher.InvokeAsync(() =>
+                            {
+                                Log?.Invoke("<ID:0/001> Session Failed. Retrying...", LogLevel.Warning);
+                            });
+                            OdinEngine.ClosePort();
+                        }
+                    }
+                    // Si no se detecta puerto y antes había uno conectado
+                    else if (portName == null && isDeviceConnected)
+                    {
+                        isDeviceConnected = false;
+                        await Application.Current.Dispatcher.InvokeAsync(() =>
+                        {
+                            PortDetected?.Invoke("Unknown");
+                            Log?.Invoke("<ID:0/001> Removed!!", LogLevel.Warning);
+                            
+                            // Cerrar puerto y limpiar OdinEngine
                             if (OdinEngine != null)
                             {
                                 OdinEngine.ClosePort();
                                 OdinEngine?.Dispose();
+                                OdinEngine = null;
                             }
-                            
-                            // Actualizar UI con el nuevo puerto
+                        });
+                    }
+                    // Si el puerto detectado cambió (diferente COM) y está conectado
+                    else if (portName != null && isDeviceConnected && OdinEngine != null)
+                    {
+                        string currentPort = OdinEngine.GetCurrentPort()?.PortName;
+                        if (currentPort != null && currentPort != portName)
+                        {
+                            // El puerto cambió, cerrar el anterior y reconectar al nuevo
                             await Application.Current.Dispatcher.InvokeAsync(() =>
                             {
-                                PortDetected?.Invoke(detectedPort);
-                                Log?.Invoke($"<ID:0/001> Port Changed!! From {currentPortStatus} to {detectedPort}", LogLevel.Info);
+                                Log?.Invoke($"<ID:0/001> Port Changed!! From {currentPort} to {portName}", LogLevel.Info);
                             });
                             
-                            // Intentar handshake en el nuevo puerto
-                            bool handshakeSuccess = false;
-                            using (var tempEngine = new OdinEngine(detectedPort))
-                            {
-                                handshakeSuccess = await tempEngine.InitializeAndHandshake(detectedPort);
-                            }
+                            OdinEngine.ClosePort();
+                            isDeviceConnected = false;
                             
-                            if (handshakeSuccess)
+                            // Usar StartSession completo para reconectar al nuevo puerto
+                            // Esto garantiza que se envíe el comando 0x65 y se mantenga la conexión estable
+                            if (await OdinEngine.StartSession(portName))
                             {
+                                isDeviceConnected = true;
                                 await Application.Current.Dispatcher.InvokeAsync(() =>
                                 {
-                                    InitializeOdinEngine(detectedPort);
+                                    PortDetected?.Invoke(portName);
                                 });
-                                currentPortStatus = detectedPort;
+                                // Aquí el puerto se queda ABIERTO y estable con sesión activa
                             }
                             else
                             {
                                 await Application.Current.Dispatcher.InvokeAsync(() =>
                                 {
-                                    PortDetected?.Invoke("Unknown");
-                                    Log?.Invoke("<ID:0/001> Handshake Failed on Port Change. Retrying...", LogLevel.Warning);
+                                    Log?.Invoke("<ID:0/001> Failed to reconnect to new port.", LogLevel.Warning);
                                 });
-                                currentPortStatus = "Unknown";
                             }
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        // Manejar errores silenciosamente en el monitoreo
-                        // No queremos saturar el log con errores de monitoreo
-                    }
-
-                    // Escanear cada 2 segundos (aumentado según la nueva lógica)
-                    await Task.Delay(2000);
                 }
-            });
+                catch (Exception ex)
+                {
+                    // Manejar errores silenciosamente en el monitoreo
+                    // No queremos saturar el log con errores de monitoreo
+                }
+
+                // Espera 2 segundos entre chequeos
+                await Task.Delay(2000);
+            }
         }
 
         /// <summary>
@@ -480,25 +472,71 @@ namespace Odin_Flash.Controls
 
         public async Task DoFlash(long Size, List<FileFlash> ListFlash)
         {
-            // Paso 1: Detectar modo Download usando OdinEngine
-            Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
-            var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
-            if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+            // Paso 1: Verificar si ya hay una sesión activa
+            if (isDeviceConnected && OdinEngine != null)
             {
-                Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
-                return;
+                var currentPort = OdinEngine.GetCurrentPort();
+                if (currentPort != null && currentPort.IsOpen)
+                {
+                    Log?.Invoke("Dispositivo ya conectado mediante sesión activa. Saltando detección física...", LogLevel.Info);
+                    // Continuar directamente al siguiente paso (flasheo)
+                }
+                else
+                {
+                    // El puerto está cerrado, necesitamos reconectar
+                    isDeviceConnected = false;
+                    Log?.Invoke("Puerto cerrado. Detectando dispositivo...", LogLevel.Warning);
+                    var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+                    if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+                    {
+                        Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
+                        return;
+                    }
+                    // Reconectar usando StartSession
+                    if (await OdinEngine.StartSession(downloadModeResult.portName))
+                    {
+                        isDeviceConnected = true;
+                    }
+                    else
+                    {
+                        Log?.Invoke("Failed to reconnect device", LogLevel.Error);
+                        return;
+                    }
+                }
             }
+            else
+            {
+                // Solo si no hay sesión activa, detectar modo Download
+                Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
+                var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+                if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+                {
+                    Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
+                    return;
+                }
 
-            // Paso 2: Inicializar OdinEngine con el puerto detectado
-            if (OdinEngine == null)
-            {
-                InitializeOdinEngine(downloadModeResult.portName);
-            }
-            else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
-            {
-                // Si el puerto cambió, recrear OdinEngine
-                OdinEngine?.Dispose();
-                InitializeOdinEngine(downloadModeResult.portName);
+                // Inicializar OdinEngine con el puerto detectado
+                if (OdinEngine == null)
+                {
+                    InitializeOdinEngine(downloadModeResult.portName);
+                }
+                else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
+                {
+                    // Si el puerto cambió, recrear OdinEngine
+                    OdinEngine?.Dispose();
+                    InitializeOdinEngine(downloadModeResult.portName);
+                }
+
+                // Iniciar sesión completa
+                if (await OdinEngine.StartSession(downloadModeResult.portName))
+                {
+                    isDeviceConnected = true;
+                }
+                else
+                {
+                    Log?.Invoke("Failed to start session", LogLevel.Error);
+                    return;
+                }
             }
 
             if (OdinEngine == null)
@@ -509,12 +547,43 @@ namespace Odin_Flash.Controls
 
             // Paso 3: Imprimir información del dispositivo
             await Odin_Flash.Class.OdinEngineWrappers.PrintInfoAsync(OdinEngine);
-            Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
             
             // Paso 4: Verificar modo Odin
-            if (await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine))
+            // Si ya tenemos el handshake 0x64 y 0x65, POR DEFINICIÓN está en modo Odin
+            bool isInOdinMode = false;
+            
+            if (isDeviceConnected)
             {
-                Log?.Invoke("ODIN", LogLevel.Success);
+                // Si ya tenemos sesión activa (handshake 0x64 y 0x65 completados), está en modo Odin
+                isInOdinMode = true;
+                Log?.Invoke("<ID:0/001> Connection verified via LOKE session.", LogLevel.Success);
+            }
+            else
+            {
+                // Solo si no hay sesión, intenta el método viejo
+                Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
+                isInOdinMode = await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine);
+                if (isInOdinMode)
+                {
+                    Log?.Invoke("ODIN", LogLevel.Success);
+                }
+            }
+            
+            if (isInOdinMode)
+            {
+                // PROCEDER AL PIT - Usar ReadPitAutomatic con secuencia correcta
+                // Si isDeviceConnected == true, ya se hizo el 0x64/1, así que solo necesitamos el 0x64/3 y 0x61
+                Log?.Invoke("<ID:0/001> Reading PIT automatically...", LogLevel.Info);
+                byte[] pitData = await OdinEngine.ReadPitAutomatic(skipModeChange: false);
+                if (pitData != null && pitData.Length > 0)
+                {
+                    Log?.Invoke($"<ID:0/001> PIT Request successful. Received {pitData.Length} bytes. Ready to proceed.", LogLevel.Success);
+                }
+                else
+                {
+                    Log?.Invoke("<ID:0/001> PIT Request failed, but continuing...", LogLevel.Warning);
+                }
+                
                 Log?.Invoke($"Initializing Device : ", LogLevel.Info);
                 
                 // Paso 5: Inicializar comunicación LOKE
@@ -874,23 +943,70 @@ namespace Odin_Flash.Controls
             {
                 IsRunning?.Invoke(true, "ReadPit");
                 
-                Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
-                var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
-                if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+                // Verificar si ya hay una sesión activa
+                if (isDeviceConnected && OdinEngine != null)
                 {
-                    Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
-                    return;
+                    var currentPort = OdinEngine.GetCurrentPort();
+                    if (currentPort != null && currentPort.IsOpen)
+                    {
+                        Log?.Invoke("Dispositivo ya conectado mediante sesión activa. Saltando detección física...", LogLevel.Info);
+                        // Continuar directamente a leer PIT
+                    }
+                    else
+                    {
+                        // El puerto está cerrado, necesitamos reconectar
+                        isDeviceConnected = false;
+                        Log?.Invoke("Puerto cerrado. Detectando dispositivo...", LogLevel.Warning);
+                        var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+                        if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+                        {
+                            Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
+                            return;
+                        }
+                        // Reconectar usando StartSession
+                        if (await OdinEngine.StartSession(downloadModeResult.portName))
+                        {
+                            isDeviceConnected = true;
+                        }
+                        else
+                        {
+                            Log?.Invoke("Failed to reconnect device", LogLevel.Error);
+                            return;
+                        }
+                    }
                 }
+                else
+                {
+                    // Solo si no hay sesión activa, detectar modo Download
+                    Log?.Invoke("Detecting Download Mode...", LogLevel.Info);
+                    var downloadModeResult = await Odin_Flash.Class.OdinEngine.FindAndSetDownloadModeAsync();
+                    if (!downloadModeResult.success || string.IsNullOrEmpty(downloadModeResult.portName))
+                    {
+                        Log?.Invoke("Device is not in Download Mode", LogLevel.Error);
+                        return;
+                    }
 
-                // Inicializar OdinEngine
-                if (OdinEngine == null)
-                {
-                    InitializeOdinEngine(downloadModeResult.portName);
-                }
-                else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
-                {
-                    OdinEngine?.Dispose();
-                    InitializeOdinEngine(downloadModeResult.portName);
+                    // Inicializar OdinEngine
+                    if (OdinEngine == null)
+                    {
+                        InitializeOdinEngine(downloadModeResult.portName);
+                    }
+                    else if (OdinEngine.GetCurrentPort()?.PortName != downloadModeResult.portName)
+                    {
+                        OdinEngine?.Dispose();
+                        InitializeOdinEngine(downloadModeResult.portName);
+                    }
+
+                    // Iniciar sesión completa
+                    if (await OdinEngine.StartSession(downloadModeResult.portName))
+                    {
+                        isDeviceConnected = true;
+                    }
+                    else
+                    {
+                        Log?.Invoke("Failed to start session", LogLevel.Error);
+                        return;
+                    }
                 }
 
                 if (OdinEngine == null)
@@ -900,11 +1016,50 @@ namespace Odin_Flash.Controls
                 }
 
                 await Odin_Flash.Class.OdinEngineWrappers.PrintInfoAsync(OdinEngine);
-                Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
                 
-                if (await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine))
+                // Verificar modo Odin
+                // Si ya tenemos el handshake 0x64 y 0x65, POR DEFINICIÓN está en modo Odin
+                bool isInOdinMode = false;
+                
+                if (isDeviceConnected)
                 {
-                    Log?.Invoke("ODIN", LogLevel.Success);
+                    // Si ya tenemos sesión activa (handshake 0x64 y 0x65 completados), está en modo Odin
+                    isInOdinMode = true;
+                    Log?.Invoke("<ID:0/001> Connection verified via LOKE session.", LogLevel.Success);
+                }
+                else
+                {
+                    // Solo si no hay sesión, intenta el método viejo
+                    Log?.Invoke("Checking Download Mode : ", LogLevel.Info);
+                    isInOdinMode = await Odin_Flash.Class.OdinEngineWrappers.IsOdinAsync(OdinEngine);
+                    if (isInOdinMode)
+                    {
+                        Log?.Invoke("ODIN", LogLevel.Success);
+                    }
+                }
+                
+                if (isInOdinMode)
+                {
+                    // PROCEDER AL PIT - Secuencia exacta sin cerrar el puerto entre comandos
+                    Log?.Invoke("<ID:0/001> Starting PIT read sequence...", LogLevel.Info);
+                    
+                    // Si isDeviceConnected == true, StartSession() ya hizo el 0x64/1 y 0x65
+                    // Si isDeviceConnected == false, StartSession() también hizo el 0x64/1 y 0x65
+                    // Por lo tanto, NO necesitamos hacer 0x64/1 de nuevo aquí
+                    // ReadPitAutomatic() hará el 0x64/3 (cambio de modo) y luego el 0x61 (pedir PIT)
+                    Log?.Invoke("<ID:0/001> Reading PIT automatically (session already established)...", LogLevel.Info);
+                    byte[] pitData = await OdinEngine.ReadPitAutomatic(skipModeChange: false);
+                    
+                    if (pitData != null && pitData.Length > 0)
+                    {
+                        Log?.Invoke($"<ID:0/001> PIT read successfully: {pitData.Length} bytes. Connection maintained for flash.", LogLevel.Success);
+                    }
+                    else
+                    {
+                        Log?.Invoke("<ID:0/001> PIT read failed.", LogLevel.Error);
+                        return;
+                    }
+                    
                     Log?.Invoke("Initializing Device : ", LogLevel.Info);
                     if (await Odin_Flash.Class.OdinEngineWrappers.LOKE_InitializeAsync(OdinEngine, 0))
                     {

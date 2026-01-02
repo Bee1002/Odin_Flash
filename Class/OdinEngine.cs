@@ -867,27 +867,37 @@ namespace Odin_Flash.Class
                 _port.Parity = Parity.None; // 0x0
                 _port.StopBits = StopBits.One; // 0x0
 
-                // Configuración de señales eléctricas (visto en el bitmask anterior)
-                // Sin DTR y RTS activos, el teléfono ignora cualquier comando
-                _port.DtrEnable = true;
-                _port.RtsEnable = true;
-
                 // Timeouts
                 _port.ReadTimeout = 5000;
                 _port.WriteTimeout = 5000;
 
+                // Abrir puerto primero
                 _port.Open();
 
+                // TRUCO: Reset de señales DTR/RTS para asegurar detección correcta
+                // Desactivar primero, esperar, luego activar - esto ayuda al dispositivo a detectar el cambio de estado
+                _port.DtrEnable = false;
+                _port.RtsEnable = false;
+                await Task.Delay(100);
+                
+                // CRÍTICO: Configuración de señales eléctricas según FUN_00437fb0 (Ghidra)
+                // El bitmask local_24._8_4_ | 3 activa específicamente DTR y RTS
+                // Sin DTR y RTS activos, el teléfono ignora cualquier comando
+                _port.DtrEnable = true;
+                _port.RtsEnable = true;
+                
+                // ESTO ES VITAL: El teléfono necesita tiempo para detectar que DTR/RTS subieron
+                // El delay de 500ms debe ocurrir DESPUÉS de activar DTR/RTS y ANTES de limpiar buffers
+                // Esto permite que el hardware del teléfono detecte las señales eléctricas correctamente
+                await Task.Delay(500);
+
                 // Limpieza de buffers inicial (visto en PurgeComm)
+                // Se hace DESPUÉS del delay para no interferir con la detección de DTR/RTS
                 _port.DiscardInBuffer();
                 _port.DiscardOutBuffer();
 
-                // El Sleep(500) que vimos en FUN_00437fb0
-                // Delay obligatorio de 500ms para estabilización del puerto
-                await Task.Delay(500);
-
                 Log($"Puerto {portName} abierto y configurado.", LogLevel.Info);
-                return true;
+                return _port.IsOpen;
             }
             catch (Exception ex)
             {
@@ -898,10 +908,12 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Envía el "latido" de handshake para confirmar que el dispositivo está presente y en modo Odin
-        /// Envía el comando "ODIN" en un paquete de 500 bytes y espera la respuesta "LOKE" o ACK (0x06)
-        /// Basado en el análisis de Ghidra: paquete de 0x1F4 (500) bytes con comando "ODIN" al inicio
+        /// Usa la estructura correcta según Ghidra FUN_004324d0: paquete de 1024 bytes (0x400)
+        /// Lectura de exactamente 8 bytes según FUN_00437b00 para evitar que el buffer se quede "sucio"
+        /// Estructura: [0-3] OpCode (4 bytes, Little Endian), [4-7] Sub-comando, [8-11] Magic String "ODIN"
+        /// Basado en el análisis del decompiler: local_408 = param_1 (OpCode), local_404 = param_2 (Sub-comando)
         /// </summary>
-        /// <returns>True si el handshake fue exitoso (recibió "LOKE" o ACK)</returns>
+        /// <returns>True si el handshake fue exitoso (recibió ACK 0x06 o respuesta 0x64)</returns>
         public async Task<bool> SendOdinHandshake()
         {
             if (_port == null || !_port.IsOpen)
@@ -912,36 +924,60 @@ namespace Odin_Flash.Class
 
             try
             {
-                // 1. Preparamos el buffer de 500 bytes según Ghidra (0x1F4)
-                byte[] handshakePacket = new byte[500];
+                // 1. Odin v3.07 usa 1024 bytes (0x400)
+                byte[] sendBuffer = new byte[1024]; 
+                
+                // 2. Estructura exacta de los parámetros de FUN_004324d0
+                // Offset 0: OpCode (param_1) - local_408 = param_1
+                byte[] opCode = BitConverter.GetBytes(0x64); // 64 00 00 00
+                Array.Copy(opCode, 0, sendBuffer, 0, 4);
+
+                // Offset 4: Sub-OpCode (param_2) -> Odin 3.07 usa a veces 0x00000001 - local_404 = param_2
+                byte[] subOp = BitConverter.GetBytes(0x01); 
+                Array.Copy(subOp, 0, sendBuffer, 4, 4);
+
+                // Offset 8: Aquí es donde Odin suele meter el "Magic" o parámetros adicionales (param_3)
+                // Según Ghidra, hay un bucle for que copia param_3 a auStack_400
                 byte[] magic = System.Text.Encoding.ASCII.GetBytes("ODIN");
+                Array.Copy(magic, 0, sendBuffer, 8, magic.Length);
+
+                // 3. Limpieza física del puerto
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
                 
-                // Copiamos "ODIN" al inicio del paquete
-                Array.Copy(magic, 0, handshakePacket, 0, magic.Length);
+                // Enviamos la ráfaga completa
+                _port.Write(sendBuffer, 0, 1024);
+                Log("<ID:0/001> Sending 0x64 session control packet...", LogLevel.Info);
 
-                Log("Enviando comando de Handshake (ODIN)...", LogLevel.Info);
-
-                // 2. Enviamos el paquete completo
-                _port.Write(handshakePacket, 0, 500);
-
-                // 3. Esperamos la respuesta del teléfono
-                // El teléfono debe responder con "LOKE" (4 bytes) o un ACK (0x06)
-                byte[] response = new byte[4];
-                
-                // Le damos un margen de 2 segundos para responder
+                // 4. La lectura de 8 bytes que vimos en FUN_00437b00
+                byte[] receiveBuffer = new byte[8];
                 int originalTimeout = _port.ReadTimeout;
-                _port.ReadTimeout = 2000;
-                
+                _port.ReadTimeout = 5000; // Aumentamos a 5s por si el driver es lento 
+
                 try
                 {
-                    int bytesRead = await Task.Run(() => _port.Read(response, 0, 4));
+                    int bytesRead = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(receiveBuffer, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
 
                     if (bytesRead > 0)
                     {
-                        string respStr = System.Text.Encoding.ASCII.GetString(response);
-                        if (respStr == "LOKE" || response[0] == 0x06)
+                        // Debug: Ver qué nos devolvió exactamente el teléfono
+                        string hexResponse = BitConverter.ToString(receiveBuffer);
+                        Log($"Phone Response (HEX): {hexResponse}", LogLevel.Debug);
+
+                        // Verificamos si los primeros 4 bytes coinciden con nuestro OpCode (Eco)
+                        int responseOp = BitConverter.ToInt32(receiveBuffer, 0);
+                        if (responseOp == 0x64 || receiveBuffer[0] == 0x06)
                         {
-                            Log("¡Handshake exitoso! Respuesta: LOKE detectado.", LogLevel.Success);
+                            Log("<ID:0/001> Handshake Successful! Session Open.", LogLevel.Success);
                             return true;
                         }
                     }
@@ -952,12 +988,1049 @@ namespace Odin_Flash.Class
                     _port.ReadTimeout = originalTimeout;
                 }
                 
-                Log("El dispositivo no respondió al handshake correctamente.", LogLevel.Warning);
+                Log("<ID:0/001> Handshake Failed: Invalid response from device.", LogLevel.Error);
                 return false;
             }
             catch (Exception ex)
             {
-                Log($"Fallo en la comunicación: {ex.Message}", LogLevel.Error);
+                Log($"<ID:0/001> Communication Error: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Solicita información del dispositivo usando el comando 0x65
+        /// Este comando se envía inmediatamente después del handshake para mantener la conexión activa
+        /// Evita que el teléfono reinicie el puerto USB y se desconecte
+        /// </summary>
+        /// <returns>True si el dispositivo respondió (la conexión se mantiene estable)</returns>
+        public async Task<bool> SendRequestInfo()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para solicitar información", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                
+                // OpCode 0x65 (Visto en Ghidra como el siguiente paso tras 0x64)
+                byte[] opCode = BitConverter.GetBytes(0x65);
+                Array.Copy(opCode, 0, buffer, 0, 4);
+                
+                // Sub-op 1
+                byte[] subOp = BitConverter.GetBytes(0x01);
+                Array.Copy(subOp, 0, buffer, 4, 4);
+
+                _port.Write(buffer, 0, 1024);
+                Log("<ID:0/001> Requesting Device Info (0x65)...", LogLevel.Info);
+
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(resp, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    if (read > 0)
+                    {
+                        string hexResponse = BitConverter.ToString(resp);
+                        Log($"Device Info Response (HEX): {hexResponse}", LogLevel.Debug);
+                        Log("<ID:0/001> Device Info received. Connection maintained.", LogLevel.Success);
+                        return true;
+                    }
+                    else
+                    {
+                        Log("<ID:0/001> No response to info request, but connection may still be active.", LogLevel.Warning);
+                        return true; // Aún así consideramos éxito para mantener la conexión
+                    }
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error requesting device info: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Solicita y descarga el archivo PIT (Partition Information Table) del dispositivo usando el comando 0x61
+        /// El PIT contiene la "hoja de ruta" del teléfono con información sobre las particiones
+        /// Usa OpCode 0x61 (Request PIT Download) en lugar de 0x66 para mayor compatibilidad
+        /// El comando 0x61 es distinto a los anteriores: el teléfono no solo responde con 8 bytes,
+        /// sino que envía un archivo completo (la tabla de particiones)
+        /// </summary>
+        /// <returns>Array de bytes con los datos del PIT, o null si falla la solicitud o descarga</returns>
+        public async Task<byte[]> RequestPit()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para solicitar PIT", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                
+                // Prueba con 0x61 (Request PIT Download) en lugar de 0x66
+                byte[] opCode = BitConverter.GetBytes(0x61);
+                Array.Copy(opCode, 0, buffer, 0, 4);
+                
+                // Sub-op 0x00
+                byte[] subOp = BitConverter.GetBytes(0x00);
+                Array.Copy(subOp, 0, buffer, 4, 4);
+
+                // Limpieza de buffers antes de enviar (evita interferencia de datos residuales)
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+                Log("<ID:0/001> Requesting PIT via 0x61...", LogLevel.Info);
+
+                // 1. Leer cabecera de respuesta (8 bytes)
+                byte[] header = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000; // 5 segundos para la cabecera
+
+                try
+                {
+                    int headerRead = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(header, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    if (headerRead < 8)
+                    {
+                        Log("<ID:0/001> No response to PIT request.", LogLevel.Warning);
+                        return null;
+                    }
+
+                    string hexResponse = BitConverter.ToString(header);
+                    Log($"PIT Response (HEX): {hexResponse}", LogLevel.Debug);
+
+                    // Si responde algo distinto a FF FF FF FF, ¡lo tenemos!
+                    // Verificar si la respuesta no es 0xFF (rechazo o error)
+                    if (headerRead > 0 && header[0] != 0xFF)
+                    {
+                        // 2. Preparar buffer para el archivo PIT (normalmente 4KB o 8KB)
+                        // En el protocolo Loke, tras el ACK del 0x61, el móvil manda el stream
+                        byte[] pitData = new byte[4096]; // Buffer inicial de 4KB
+                        int totalRead = 0;
+                        
+                        // Damos un tiempo para que el móvil prepare el envío
+                        await Task.Delay(100);
+
+                        // Aumentar timeout para la lectura del archivo completo
+                        _port.ReadTimeout = 10000; // 10 segundos para recibir el PIT completo
+
+                        // 3. Leer los datos del PIT
+                        try
+                        {
+                            totalRead = await Task.Run(() => {
+                                try 
+                                { 
+                                    return _port.Read(pitData, 0, pitData.Length); 
+                                }
+                                catch 
+                                { 
+                                    return 0; 
+                                }
+                            });
+
+                            if (totalRead > 0)
+                            {
+                                // Si leímos menos de lo esperado, ajustar el array
+                                if (totalRead < pitData.Length)
+                                {
+                                    byte[] trimmedData = new byte[totalRead];
+                                    Array.Copy(pitData, 0, trimmedData, 0, totalRead);
+                                    Log($"<ID:0/001> PIT received ({totalRead} bytes).", LogLevel.Success);
+                                    return trimmedData;
+                                }
+                                
+                                Log($"<ID:0/001> PIT received ({totalRead} bytes).", LogLevel.Success);
+                                return pitData;
+                            }
+                            else
+                            {
+                                Log("<ID:0/001> No PIT data received after header.", LogLevel.Warning);
+                                return null;
+                            }
+                        }
+                        finally
+                        {
+                            _port.ReadTimeout = originalTimeout;
+                        }
+                    }
+                    else
+                    {
+                        Log("<ID:0/001> PIT Request Rejected. Invalid response header.", LogLevel.Warning);
+                        return null;
+                    }
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error requesting PIT: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Lee el PIT automáticamente siguiendo la secuencia correcta de apertura de datos
+        /// Paso 1: Cambio de modo (0x64, 3) - Vital para que el 0x61 responda (opcional si ya se hizo)
+        /// Paso 2: Petición de PIT (0x61, 0)
+        /// Paso 3: Lectura del stream de datos
+        /// </summary>
+        /// <param name="skipModeChange">Si es true, omite el cambio de modo (0x64, 3) porque ya se hizo antes</param>
+        /// <returns>Array de bytes con los datos del PIT, o null si falla</returns>
+        public async Task<byte[]> ReadPitAutomatic(bool skipModeChange = false)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para leer PIT automáticamente", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                // Paso 1: Ya tienes el 0x64/1 y 0x65 hechos.
+                // Paso 2: CAMBIO DE MODO (Vital para que el 0x61 responda)
+                // Sin este comando, el teléfono está en "Modo Comando" y tú le estás pidiendo un "Stream de Datos" (el PIT)
+                // El teléfono simplemente ignora la petición sin este paso
+                if (!skipModeChange)
+                {
+                    Log("<ID:0/001> Configurando modo de transferencia (0x64, 3)...", LogLevel.Info);
+                    await SendControlPacket(0x64, 3); 
+                    await Task.Delay(100); // Dale un respiro al procesador del móvil
+                }
+                else
+                {
+                    Log("<ID:0/001> Modo de transferencia ya configurado, omitiendo 0x64/3...", LogLevel.Info);
+                }
+
+                // Paso 3: PETICIÓN DE PIT (0x61)
+                Log("<ID:0/001> Requesting PIT via 0x61...", LogLevel.Info);
+                byte[] response = await SendControlPacketWithResponse(0x61, 0);
+
+                if (response != null && response[0] == 0x61)
+                {
+                    // Si llegamos aquí, ¡el teléfono aceptó!
+                    // Los bytes 4, 5, 6, 7 del response contienen el TAMAÑO del archivo PIT
+                    int pitSize = BitConverter.ToInt32(response, 4);
+                    Log($"<ID:0/001> PIT detected! Size: {pitSize} bytes. Reading stream...", LogLevel.Success);
+
+                    // Paso 4: LECTURA DEL STREAM
+                    // IMPORTANTE: Tras el ACK del 0x61, NO envíes más paquetes. Solo LEE.
+                    byte[] pitData = new byte[pitSize > 0 ? pitSize : 4096];
+                    int originalTimeout = _port.ReadTimeout;
+                    _port.ReadTimeout = 5000;
+                    
+                    try
+                    {
+                        int totalRead = 0;
+                        while (totalRead < pitData.Length)
+                        {
+                            int read = await Task.Run(() => {
+                                try 
+                                { 
+                                    return _port.Read(pitData, totalRead, pitData.Length - totalRead); 
+                                }
+                                catch 
+                                { 
+                                    return 0; 
+                                }
+                            });
+                            
+                            if (read == 0) break;
+                            totalRead += read;
+                        }
+
+                        if (totalRead > 0)
+                        {
+                            // Si leímos menos de lo esperado, ajustar el array
+                            if (totalRead < pitData.Length)
+                            {
+                                byte[] trimmedData = new byte[totalRead];
+                                Array.Copy(pitData, 0, trimmedData, 0, totalRead);
+                                Log($"<ID:0/001> PIT File downloaded successfully ({totalRead} bytes).", LogLevel.Success);
+                                return trimmedData;
+                            }
+                            
+                            Log($"<ID:0/001> PIT File downloaded successfully ({totalRead} bytes).", LogLevel.Success);
+                            return pitData;
+                        }
+                        else
+                        {
+                            Log("<ID:0/001> No PIT data received.", LogLevel.Warning);
+                            return null;
+                        }
+                    }
+                    finally
+                    {
+                        _port.ReadTimeout = originalTimeout;
+                    }
+                }
+
+                Log("<ID:0/001> PIT Request Rejected or Timeout.", LogLevel.Error);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error in ReadPitAutomatic: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene el PIT para mapeo usando el protocolo correcto de Odin (OpCode 0x65)
+        /// Basado en el análisis de Ghidra: FUN_00435750
+        /// Secuencia:
+        /// 1. OpCode 0x65, Sub-op 1: Obtener el tamaño total del PIT
+        /// 2. OpCode 0x65, Sub-op 2: Indicar qué fragmento se va a leer (índice)
+        /// 3. Leer 500 bytes del puerto COM
+        /// 4. Repetir pasos 2-3 hasta completar
+        /// 5. OpCode 0x65, Sub-op 3: Finalizar lectura
+        /// </summary>
+        /// <returns>Array de bytes con los datos completos del PIT, o null si falla</returns>
+        public async Task<byte[]> GetPitForMapping()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para obtener PIT para mapeo", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                Log("<ID:0/001> Get PIT for mapping..", LogLevel.Info);
+
+                // PASO 1: Pedir el tamaño total del PIT (Op 0x65, Sub 1)
+                byte[] sizeResp = await SendControlPacketWithResponse(0x65, 1);
+                if (sizeResp == null || sizeResp[0] != 0x65)
+                {
+                    Log("<ID:0/001> Failed to get PIT size. Invalid response.", LogLevel.Error);
+                    return null;
+                }
+
+                // El tamaño viene en los bytes 4-7 de la respuesta (local_20 en Ghidra)
+                int totalSize = BitConverter.ToInt32(sizeResp, 4);
+                if (totalSize <= 0)
+                {
+                    Log("<ID:0/001> Invalid PIT size received.", LogLevel.Error);
+                    return null;
+                }
+
+                Log($"<ID:0/001> PIT Size detected: {totalSize} bytes", LogLevel.Info);
+
+                // PASO 2: Preparar el buffer y calcular fragmentos (de 500 en 500 como en Ghidra)
+                byte[] fullPit = new byte[totalSize];
+                int fragments = (totalSize + 499) / 500; // Redondeo hacia arriba
+
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000; // 5 segundos por fragmento
+
+                try
+                {
+                    for (int i = 0; i < fragments; i++)
+                    {
+                        // Decirle al teléfono qué fragmento queremos (Op 0x65, Sub 2)
+                        // param_3 en Ghidra es el índice del fragmento (local_1c)
+                        if (!await SendControlPacketWithIndex(0x65, 2, i))
+                        {
+                            Log($"<ID:0/001> Failed to request fragment {i}.", LogLevel.Error);
+                            return null;
+                        }
+
+                        // Leer los 500 bytes (o lo que quede)
+                        int bytesToRead = Math.Min(500, totalSize - (i * 500));
+                        byte[] chunk = new byte[bytesToRead];
+                        int offset = i * 500;
+
+                        int read = await Task.Run(() =>
+                        {
+                            try
+                            {
+                                return _port.Read(chunk, 0, bytesToRead);
+                            }
+                            catch
+                            {
+                                return 0;
+                            }
+                        });
+
+                        if (read > 0)
+                        {
+                            Array.Copy(chunk, 0, fullPit, offset, read);
+                            Log($"<ID:0/001> Fragment {i + 1}/{fragments} read ({read} bytes)", LogLevel.Debug);
+                        }
+                        else
+                        {
+                            Log($"<ID:0/001> No data received for fragment {i}.", LogLevel.Warning);
+                        }
+
+                        // Pequeña pausa entre fragmentos para dar tiempo al dispositivo
+                        await Task.Delay(50);
+                    }
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+
+                // PASO 3: Finalizar lectura (Op 0x65, Sub 3)
+                if (!await SendControlPacket(0x65, 3))
+                {
+                    Log("<ID:0/001> Warning: Failed to finalize PIT reading, but data may be valid.", LogLevel.Warning);
+                }
+
+                Log("<ID:0/001> PIT read and mapped successfully.", LogLevel.Success);
+                return fullPit;
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error in GetPitForMapping: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Envía un paquete de control con OpCode, Sub-OpCode e índice específicos
+        /// Usado para indicar qué fragmento del PIT se va a leer (OpCode 0x65, Sub-op 2)
+        /// </summary>
+        /// <param name="opCode">OpCode del comando (ej: 0x65)</param>
+        /// <param name="subOpCode">Sub-OpCode del comando (ej: 2 para indicar fragmento)</param>
+        /// <param name="index">Índice del fragmento a leer</param>
+        /// <returns>True si el comando se envió correctamente y fue aceptado</returns>
+        private async Task<bool> SendControlPacketWithIndex(uint opCode, uint subOpCode, int index)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar paquete de control con índice", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+
+                // OpCode (4 bytes Little Endian)
+                byte[] opCodeBytes = BitConverter.GetBytes(opCode);
+                Array.Copy(opCodeBytes, 0, buffer, 0, 4);
+
+                // Sub-OpCode (4 bytes Little Endian)
+                byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
+                Array.Copy(subOpBytes, 0, buffer, 4, 4);
+
+                // Índice del fragmento (4 bytes Little Endian) - va en los bytes 8-11
+                byte[] indexBytes = BitConverter.GetBytes(index);
+                Array.Copy(indexBytes, 0, buffer, 8, 4);
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+                Log($"<ID:0/001> Sending control packet (Op: 0x{opCode:X2}, Sub: 0x{subOpCode:X2}, Index: {index})...", LogLevel.Debug);
+
+                // Leer respuesta (8 bytes)
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() =>
+                    {
+                        try
+                        {
+                            return _port.Read(resp, 0, 8);
+                        }
+                        catch
+                        {
+                            return 0;
+                        }
+                    });
+
+                    if (read > 0)
+                    {
+                        // Verificar respuesta (puede ser eco del OpCode o ACK)
+                        int responseOp = BitConverter.ToInt32(resp, 0);
+                        if (responseOp == opCode || resp[0] == 0x06)
+                        {
+                            return true;
+                        }
+                    }
+
+                    Log("<ID:0/001> Control packet with index response timeout or invalid.", LogLevel.Warning);
+                    return true; // Consideramos éxito aunque no haya respuesta clara
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error sending control packet with index: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Lee el PIT automáticamente usando una secuencia directa sin repetir handshakes
+        /// Envía 0x61 y lee el tamaño del PIT desde la respuesta, luego lee los datos completos
+        /// Mantiene la conexión abierta para después el flash
+        /// </summary>
+        /// <returns>Array de bytes con los datos del PIT, o null si falla</returns>
+        [Obsolete("Usar ReadPitAutomatic() en su lugar")]
+        public async Task<byte[]> AutoReadPit()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para leer PIT automáticamente", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                // NO envíes 0x64 otra vez si ya lo hiciste al principio.
+                // Vamos directo al grano.
+                
+                Log("<ID:0/001> Requesting PIT via 0x61...", LogLevel.Info);
+                
+                // Para el PIT, NO usamos SendControlPacket porque limpia el buffer
+                // La respuesta del PIT viene pegada al ACK, así que no debemos limpiar después de enviar
+                byte[] buffer = new byte[1024];
+                BitConverter.GetBytes(0x61).CopyTo(buffer, 0);
+                BitConverter.GetBytes(0x00).CopyTo(buffer, 4);
+
+                // Limpieza de buffers SOLO antes de enviar (no después)
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+
+                // CRÍTICO: Esperar 200ms antes de leer porque la respuesta del PIT viene pegada al ACK
+                await Task.Delay(200);
+
+                // Leer respuesta (8 bytes) - La respuesta viene inmediatamente después del ACK
+                byte[] response = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(response, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    if (read >= 8 && response[0] == 0x61)
+                    {
+                        // El teléfono aceptó. Los bytes 4 a 7 de 'response' son el tamaño del PIT.
+                        int pitSize = BitConverter.ToInt32(response, 4);
+                        Log($"<ID:0/001> PIT size reported by phone: {pitSize} bytes.", LogLevel.Info);
+
+                        if (pitSize <= 0) pitSize = 4096; // Tamaño de seguridad si viene vacío
+
+                        // PASO CRÍTICO: Leer el flujo de datos inmediatamente
+                        byte[] pitBuffer = new byte[pitSize];
+                        _port.ReadTimeout = 5000;
+
+                        try 
+                        {
+                            int bytesRead = 0;
+                            int attempts = 0;
+                            
+                            // Odin lee en un bucle hasta completar el tamaño
+                            while (bytesRead < pitSize && attempts < 10) 
+                            {
+                                int readBytes = await Task.Run(() => {
+                                    try 
+                                    { 
+                                        return _port.Read(pitBuffer, bytesRead, pitSize - bytesRead); 
+                                    }
+                                    catch 
+                                    { 
+                                        return 0; 
+                                    }
+                                });
+                                
+                                if (readBytes > 0)
+                                {
+                                    bytesRead += readBytes;
+                                }
+                                attempts++;
+                                
+                                // Si no leímos nada en este intento, esperar un poco
+                                if (readBytes == 0 && bytesRead < pitSize)
+                                {
+                                    await Task.Delay(100);
+                                }
+                            }
+
+                            if (bytesRead > 0) 
+                            {
+                                // Si leímos menos de lo esperado, ajustar el array
+                                if (bytesRead < pitSize)
+                                {
+                                    byte[] trimmedBuffer = new byte[bytesRead];
+                                    Array.Copy(pitBuffer, 0, trimmedBuffer, 0, bytesRead);
+                                    Log($"<ID:0/001> PIT Read Successfully ({bytesRead} bytes)!", LogLevel.Success);
+                                    return trimmedBuffer;
+                                }
+                                
+                                Log($"<ID:0/001> PIT Read Successfully ({bytesRead} bytes)!", LogLevel.Success);
+                                // Aquí podrías guardar el archivo para verificar:
+                                // File.WriteAllBytes("dump.pit", pitBuffer);
+                                return pitBuffer;
+                            }
+                            else
+                            {
+                                Log("<ID:0/001> No PIT data received.", LogLevel.Warning);
+                                return null;
+                            }
+                        } 
+                        catch (Exception ex) 
+                        {
+                            Log($"Error leyendo flujo de datos PIT: {ex.Message}", LogLevel.Error);
+                            return null;
+                        }
+                        finally
+                        {
+                            _port.ReadTimeout = originalTimeout;
+                        }
+                    }
+                    else
+                    {
+                        Log("<ID:0/001> PIT request rejected or invalid response.", LogLevel.Warning);
+                        return null;
+                    }
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error in AutoReadPit: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Solicita el PIT usando una secuencia optimizada que "engaña" al teléfono
+        /// para que se mantenga vivo y entregue el PIT sin entrar en el bucle complejo de flasheo
+        /// Según el flujo de Odin, antes de un 0x66/0x61, a veces se necesita un "Begin Session" limpio
+        /// </summary>
+        /// <returns>True si el PIT se recibió correctamente</returns>
+        public async Task<bool> RequestPitFinal()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para solicitar PIT final", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                
+                // PASO A: Comando 0x61 con Sub-op 0 (Petición de PIT)
+                // Usamos la estructura de 1024 bytes que confirmamos en Ghidra
+                BitConverter.GetBytes(0x61).CopyTo(buffer, 0); 
+                BitConverter.GetBytes(0x00).CopyTo(buffer, 4);
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+                Log("<ID:0/001> Requesting PIT (0x61)...", LogLevel.Info);
+
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 2000; // 2 segundos para la respuesta inicial
+
+                try
+                {
+                    int read = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(resp, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    // Si el teléfono responde con algo que NO sea FF FF FF FF
+                    if (read > 0 && resp[0] != 0xFF) 
+                    {
+                        string hexResponse = BitConverter.ToString(resp);
+                        Log($"PIT Response (HEX): {hexResponse}", LogLevel.Debug);
+                        
+                        // El teléfono está listo para enviar el PIT.
+                        // Ahora debemos leer los datos en paquetes de 1024
+                        byte[] pitData = new byte[4096];
+                        
+                        // Aumentar timeout para la lectura del archivo completo
+                        _port.ReadTimeout = 10000; // 10 segundos para recibir el PIT completo
+                        
+                        try
+                        {
+                            int dataRead = await Task.Run(() => {
+                                try 
+                                { 
+                                    return _port.Read(pitData, 0, 4096); 
+                                }
+                                catch 
+                                { 
+                                    return 0; 
+                                }
+                            });
+                            
+                            if (dataRead > 0)
+                            {
+                                Log($"<ID:0/001> PIT Data Received: {dataRead} bytes.", LogLevel.Success);
+                                return true;
+                            }
+                            else
+                            {
+                                Log("<ID:0/001> No PIT data received after confirmation.", LogLevel.Warning);
+                                return false;
+                            }
+                        }
+                        finally
+                        {
+                            _port.ReadTimeout = originalTimeout;
+                        }
+                    }
+                    else
+                    {
+                        Log("<ID:0/001> PIT request rejected (0xFF response). Trying fallback...", LogLevel.Warning);
+                    }
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+
+                // Si falla el 0x61, intenta el 0x66 pero con Sub-op 1 (Solo cabecera)
+                Log("<ID:0/001> Trying fallback: 0x66 with Sub-op 0x01...", LogLevel.Info);
+                return await SendControlPacket(0x66, 0x01);
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error in RequestPitFinal: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Envía un paquete de control con OpCode y Sub-OpCode específicos y retorna la respuesta
+        /// Usado para comandos que necesitan leer la respuesta completa (como 0x61 para PIT)
+        /// </summary>
+        /// <param name="opCode">OpCode del comando (ej: 0x61)</param>
+        /// <param name="subOpCode">Sub-OpCode del comando (ej: 0x00 para PIT)</param>
+        /// <returns>Array de bytes con la respuesta (8 bytes), o null si falla</returns>
+        public async Task<byte[]> SendControlPacketWithResponse(uint opCode, uint subOpCode)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar paquete de control", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                
+                // OpCode (4 bytes Little Endian)
+                byte[] opCodeBytes = BitConverter.GetBytes(opCode);
+                Array.Copy(opCodeBytes, 0, buffer, 0, 4);
+                
+                // Sub-OpCode (4 bytes Little Endian)
+                byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
+                Array.Copy(subOpBytes, 0, buffer, 4, 4);
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+                Log($"<ID:0/001> Sending control packet (Op: 0x{opCode:X2}, Sub: 0x{subOpCode:X2})...", LogLevel.Info);
+
+                // Leer respuesta (8 bytes)
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(resp, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    if (read >= 8)
+                    {
+                        string hexResponse = BitConverter.ToString(resp);
+                        Log($"Control Packet Response (HEX): {hexResponse}", LogLevel.Debug);
+                        return resp;
+                    }
+                    
+                    Log("<ID:0/001> Control packet response incomplete.", LogLevel.Warning);
+                    return null;
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error sending control packet: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Envía un paquete de control con OpCode y Sub-OpCode específicos
+        /// Usado para establecer modo de sesión y otros comandos de control
+        /// Basado en FUN_004324d0 de Ghidra
+        /// </summary>
+        /// <param name="opCode">OpCode del comando (ej: 0x64)</param>
+        /// <param name="subOpCode">Sub-OpCode del comando (ej: 0x03 para establecer modo de sesión)</param>
+        /// <returns>True si el comando se envió correctamente</returns>
+        public async Task<bool> SendControlPacket(uint opCode, uint subOpCode)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar paquete de control", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                
+                // OpCode (4 bytes Little Endian)
+                byte[] opCodeBytes = BitConverter.GetBytes(opCode);
+                Array.Copy(opCodeBytes, 0, buffer, 0, 4);
+                
+                // Sub-OpCode (4 bytes Little Endian)
+                byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
+                Array.Copy(subOpBytes, 0, buffer, 4, 4);
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+                Log($"<ID:0/001> Sending control packet (Op: 0x{opCode:X2}, Sub: 0x{subOpCode:X2})...", LogLevel.Info);
+
+                // Leer respuesta (8 bytes)
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() => {
+                        try 
+                        { 
+                            return _port.Read(resp, 0, 8); 
+                        }
+                        catch 
+                        { 
+                            return 0; 
+                        }
+                    });
+
+                    if (read > 0)
+                    {
+                        string hexResponse = BitConverter.ToString(resp);
+                        Log($"Control Packet Response (HEX): {hexResponse}", LogLevel.Debug);
+                        
+                        // Verificar respuesta (puede ser eco del OpCode o ACK)
+                        int responseOp = BitConverter.ToInt32(resp, 0);
+                        if (responseOp == opCode || resp[0] == 0x06)
+                        {
+                            Log($"<ID:0/001> Control packet accepted.", LogLevel.Success);
+                            return true;
+                        }
+                    }
+                    
+                    Log("<ID:0/001> Control packet response timeout or invalid.", LogLevel.Warning);
+                    return true; // Consideramos éxito aunque no haya respuesta clara
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error sending control packet: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Realiza un handshake completo para "desbloquear" el PIT
+        /// Secuencia exacta basada en Ghidra FUN_004324d0:
+        /// 1. Abrir Sesión (Op 0x64, Sub 0x01)
+        /// 2. Establecer Modo de Sesión (Op 0x64, Sub 0x03) - Esto es lo que falta para el PIT
+        /// 3. Pedir Info (Op 0x65, Sub 0x01)
+        /// 4. Pedir el PIT (Op 0x61, Sub 0x00) - Usa 0x61 para Request PIT Download
+        /// </summary>
+        /// <returns>True si el handshake completo fue exitoso y el PIT se recibió correctamente</returns>
+        public async Task<bool> FullHandshake()
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para handshake completo", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                // 1. Abrir Sesión (Ya lo tienes: Op 0x64, Sub 0x01)
+                Log("<ID:0/001> Step 1: Opening session (0x64, 0x01)...", LogLevel.Info);
+                if (!await SendOdinHandshake())
+                {
+                    Log("<ID:0/001> Failed to open session.", LogLevel.Error);
+                    return false;
+                }
+
+                // 2. Establecer Modo de Sesión (Esto es lo que falta para el PIT)
+                // En Ghidra es FUN_004324d0(0x64, 3, 0, 0, ...)
+                Log("<ID:0/001> Step 2: Setting session mode (0x64, 0x03)...", LogLevel.Info);
+                if (!await SendControlPacket(0x64, 0x03))
+                {
+                    Log("<ID:0/001> Failed to set session mode.", LogLevel.Warning);
+                    // Continuamos aunque falle, algunos dispositivos no requieren este paso
+                }
+
+                // 3. Pedir Info (Ya lo tienes: Op 0x65)
+                Log("<ID:0/001> Step 3: Requesting device info (0x65)...", LogLevel.Info);
+                if (!await SendRequestInfo())
+                {
+                    Log("<ID:0/001> Failed to request device info.", LogLevel.Warning);
+                    // Continuamos aunque falle
+                }
+
+                // 4. AHORA pedir el PIT
+                // Ya hicimos el 0x64/3 en el paso 2, así que skipModeChange = true para evitar duplicación
+                Log("<ID:0/001> Step 4: Requesting PIT (0x61)...", LogLevel.Info);
+                byte[] pitData = await ReadPitAutomatic(skipModeChange: true);
+                
+                if (pitData != null && pitData.Length > 0)
+                {
+                    Log($"<ID:0/001> Full handshake successful! PIT received ({pitData.Length} bytes).", LogLevel.Success);
+                    return true;
+                }
+                else
+                {
+                    Log("<ID:0/001> Full handshake completed but PIT request failed.", LogLevel.Warning);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error in full handshake: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Inicia una sesión completa con el dispositivo: abre puerto, handshake y solicita información
+        /// Este método orquesta el flujo completo para mantener la conexión estable
+        /// </summary>
+        /// <param name="portName">Nombre del puerto COM a usar</param>
+        /// <returns>True si la sesión se inició correctamente</returns>
+        public async Task<bool> StartSession(string portName)
+        {
+            try
+            {
+                // PASO 1: Inicializar puerto con parámetros de Ghidra
+                if (await InitializeOdinConnection(portName))
+                {
+                    // PASO 2: Abrir Sesión (Handshake con 0x64)
+                    if (await SendOdinHandshake()) 
+                    {
+                        // PASO 3: Inmediatamente pedir información (Comando 0x65)
+                        // Esto evita que el teléfono reinicie el puerto USB
+                        if (await SendRequestInfo())
+                        {
+                            Log("<ID:0/001> Session started successfully. Device ready.", LogLevel.Success);
+                            return true;
+                        }
+                        else
+                        {
+                            Log("<ID:0/001> Handshake successful but info request failed.", LogLevel.Warning);
+                            // Aún consideramos éxito si el handshake funcionó
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        Log("<ID:0/001> Handshake failed. Session not started.", LogLevel.Error);
+                        return false;
+                    }
+                }
+                else
+                {
+                    Log("<ID:0/001> Failed to initialize port. Session not started.", LogLevel.Error);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error starting session: {ex.Message}", LogLevel.Error);
                 return false;
             }
         }
@@ -984,24 +2057,31 @@ namespace Odin_Flash.Class
 
             try
             {
-                // Odin siempre usa paquetes de 500 bytes (0x1F4)
-                byte[] packet = new byte[500];
+                // EL TAMAÑO CORRECTO: 1024 bytes (0x400 como vimos en Ghidra)
+                byte[] packet = new byte[1024];
 
-                // Header del Protocolo Loke según Ghidra FUN_004324d0(0x64, ...)
+                // ESTRUCTURA (LITTLE ENDIAN)
+                // param_1 (OpCode 0x64 para Open Session) - local_408 = param_1
                 packet[0] = 0x64; // OpCode para 'Open Session' (confirmado en Ghidra)
-                
-                // Bytes 1-3: Padding/Reservado (ya están en 0x00 por defecto)
-                
-                // El resto del paquete suele ir en 0x00 para el handshake inicial,
-                // pero algunos modelos requieren la palabra 'ODIN' al final del header.
+                packet[1] = 0x00;
+                packet[2] = 0x00;
+                packet[3] = 0x00;
+
+                // param_2 (Sub-comando, Odin suele usar 0x00 o 0x01 aquí) - local_404 = param_2
+                packet[4] = 0x01;
+                packet[5] = 0x00;
+                packet[6] = 0x00;
+                packet[7] = 0x00;
+
+                // Magic String "ODIN" (Ubicación estándar en offset 8)
                 byte[] magic = System.Text.Encoding.ASCII.GetBytes("ODIN");
-                Array.Copy(magic, 0, packet, 4, magic.Length); // Copiar "ODIN" en offset 4
+                Array.Copy(magic, 0, packet, 8, magic.Length);
 
-                // Bytes 8-499: Resto del paquete con 0x00 (ya inicializado por defecto)
+                // Bytes 12-1023: Resto del paquete con 0x00 (ya inicializado por defecto)
 
-                Log("Enviando paquete de apertura de sesión (0x64)...", LogLevel.Info);
+                Log("Enviando paquete maestro de 1024 bytes (Op: 0x64)...", LogLevel.Info);
                 
-                _port.Write(packet, 0, 500);
+                _port.Write(packet, 0, 1024);
 
                 // Esperar respuesta: El teléfono debe devolver un ACK (0x06) 
                 // o un paquete que empiece por 0x64 (Sesión aceptada)
@@ -1061,12 +2141,10 @@ namespace Odin_Flash.Class
             Log($"Puerto detectado: {portName}. Inicializando...", LogLevel.Info);
 
             // 1. Abrir con los parámetros de Ghidra
+            // Nota: InitializeOdinConnection ya incluye el delay de 500ms interno según Ghidra
             if (await InitializeOdinConnection(portName))
             {
-                // 2. Esperar el tiempo que vimos en el binario
-                await Task.Delay(500);
-
-                // 3. Enviar el paquete "ODIN"
+                // 2. Enviar el paquete "ODIN" inmediatamente (el delay ya se hizo en InitializeOdinConnection)
                 return await SendOdinHandshake();
             }
 
@@ -1075,11 +2153,12 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Motor de Handshake definitivo basado en la investigación de Ghidra
-        /// Abre el puerto, configura DTR/RTS, realiza el handshake ODIN->LOKE y mantiene el puerto abierto
+        /// Abre el puerto, configura DTR/RTS, realiza el handshake con formato 0x64 y mantiene el puerto abierto
         /// Incluye los parámetros de DTR/RTS y el Sleep(500) que encontramos en FUN_00437fb0
+        /// Actualizado para usar el formato correcto según Ghidra: OpCode 0x64 (4 bytes) + Magic String "ODIN"
         /// </summary>
         /// <param name="portName">Nombre del puerto COM a abrir y configurar</param>
-        /// <returns>True si el handshake fue exitoso (recibió LOKE o ACK)</returns>
+        /// <returns>True si el handshake fue exitoso (recibió ACK 0x06 o respuesta 0x64)</returns>
         public async Task<bool> InitializeAndHandshake(string portName)
         {
             try
@@ -1098,45 +2177,55 @@ namespace Odin_Flash.Class
                 _port.WriteTimeout = 5000;
                 _port.Open();
 
-                // Limpieza inicial
+                // ESTO ES VITAL: El teléfono necesita tiempo para detectar que DTR/RTS subieron
+                // El delay de 500ms debe ocurrir DESPUÉS de abrir el puerto y ANTES de limpiar buffers
+                // Esto permite que el hardware del teléfono detecte las señales eléctricas correctamente
+                await Task.Delay(500);
+
+                // Limpieza de buffers DESPUÉS del delay (orden correcto según Ghidra)
                 _port.DiscardInBuffer();
                 _port.DiscardOutBuffer();
 
-                // El delay de estabilización de 500ms que vimos en Ghidra
-                await Task.Delay(500);
+                // Enviamos el paquete con formato correcto según Ghidra: 1024 bytes (0x400)
+                // Estructura: [0-3] OpCode 0x64 (4 bytes, Little Endian), [4-7] Sub-comando, [8-11] Magic String "ODIN"
+                byte[] buffer = new byte[1024];
+                
+                // param_1 (OpCode 0x64 para Open Session) - local_408 = param_1
+                buffer[0] = 0x64; // OpCode Open Session
+                buffer[1] = 0x00;
+                buffer[2] = 0x00;
+                buffer[3] = 0x00;
 
-                // Enviamos el paquete mágico "ODIN" (500 bytes)
-                byte[] buffer = new byte[500];
-                byte[] cmd = System.Text.Encoding.ASCII.GetBytes("ODIN");
-                Array.Copy(cmd, 0, buffer, 0, cmd.Length);
+                // param_2 (Sub-comando, Odin suele usar 0x00 o 0x01 aquí) - local_404 = param_2
+                buffer[4] = 0x01;
+                buffer[5] = 0x00;
+                buffer[6] = 0x00;
+                buffer[7] = 0x00;
 
-                _port.Write(buffer, 0, 500);
+                // Magic String "ODIN" (Ubicación estándar en offset 8)
+                byte[] magic = System.Text.Encoding.ASCII.GetBytes("ODIN");
+                Array.Copy(magic, 0, buffer, 8, magic.Length);
 
-                // Esperamos respuesta LOKE
-                byte[] response = new byte[4];
+                _port.Write(buffer, 0, 1024);
+                Log("Enviando paquete maestro de 1024 bytes (Op: 0x64)...", LogLevel.Info);
+
+                // Esperamos respuesta ACK (0x06) o 0x64
+                byte[] response = new byte[1];
                 int originalTimeout = _port.ReadTimeout;
-                _port.ReadTimeout = 1000;
+                _port.ReadTimeout = 2000;
                 
                 try
                 {
-                    int read = await Task.Run(() => _port.Read(response, 0, 4));
+                    int read = await Task.Run(() => _port.Read(response, 0, 1));
 
-                    if (read > 0)
+                    if (read > 0 && (response[0] == 0x06 || response[0] == 0x64))
                     {
-                        string resp = System.Text.Encoding.ASCII.GetString(response);
-                        // Si responde LOKE o ACK, mantenemos el puerto abierto
-                        bool success = resp.Contains("LOKE") || response[0] == 0x06;
-                        
-                        if (success)
-                        {
-                            Log($"Handshake exitoso en {portName}. Puerto mantenido abierto.", LogLevel.Success);
-                        }
-                        else
-                        {
-                            Log($"Respuesta inesperada en {portName}: {resp}", LogLevel.Warning);
-                        }
-                        
-                        return success;
+                        Log($"Handshake exitoso en {portName}. Puerto mantenido abierto.", LogLevel.Success);
+                        return true;
+                    }
+                    else if (read > 0)
+                    {
+                        Log($"Respuesta inesperada en {portName}: 0x{response[0]:X2}", LogLevel.Warning);
                     }
                 }
                 finally
