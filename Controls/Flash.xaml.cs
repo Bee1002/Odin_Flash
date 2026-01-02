@@ -185,14 +185,19 @@ namespace Odin_Flash.Controls
                 {
                     string portName = null;
                     
-                    // Si ya hay una conexión activa, verificar el puerto actual en lugar de detectar de nuevo
-                    // Esto evita conflictos cuando el puerto está abierto por OdinEngine
+                    // CRÍTICO: Si ya hay una conexión activa y el puerto está abierto, DETENER el escaneo
+                    // Esto evita el error "Operación anulada" causado por escaneo simultáneo
                     if (isDeviceConnected && OdinEngine != null)
                     {
                         var currentPort = OdinEngine.GetCurrentPort();
                         if (currentPort != null && currentPort.IsOpen)
                         {
+                            // Puerto abierto y conectado - NO escanear más, solo verificar estado
                             portName = currentPort.PortName;
+                            
+                            // Esperar más tiempo cuando el puerto está abierto para reducir carga
+                            await Task.Delay(5000);
+                            continue; // Saltar al siguiente ciclo sin escanear
                         }
                         // Si el puerto está cerrado, portName será null y se detectará como desconectado
                     }
@@ -571,10 +576,10 @@ namespace Odin_Flash.Controls
             
             if (isInOdinMode)
             {
-                // PROCEDER AL PIT - Usar ReadPitAutomatic con secuencia correcta
-                // Si isDeviceConnected == true, ya se hizo el 0x64/1, así que solo necesitamos el 0x64/3 y 0x61
-                Log?.Invoke("<ID:0/001> Reading PIT automatically...", LogLevel.Info);
-                byte[] pitData = await OdinEngine.ReadPitAutomatic(skipModeChange: false);
+                // PROCEDER AL PIT - Usar GetPitForMapping (protocolo 0x65 correcto según Ghidra)
+                // Secuencia: 0x64/1 (ya hecho) -> 0x65 (ya hecho) -> GetPitForMapping() (0x65,1 -> 0x65,2 -> 0x65,3)
+                Log?.Invoke("<ID:0/001> Reading PIT using protocol 0x65 (GetPitForMapping)...", LogLevel.Info);
+                byte[] pitData = await OdinEngine.GetPitForMapping();
                 if (pitData != null && pitData.Length > 0)
                 {
                     Log?.Invoke($"<ID:0/001> PIT Request successful. Received {pitData.Length} bytes. Ready to proceed.", LogLevel.Success);
@@ -1040,15 +1045,14 @@ namespace Odin_Flash.Controls
                 
                 if (isInOdinMode)
                 {
-                    // PROCEDER AL PIT - Secuencia exacta sin cerrar el puerto entre comandos
+                    // PROCEDER AL PIT - Secuencia exacta según Ghidra FUN_00435750
                     Log?.Invoke("<ID:0/001> Starting PIT read sequence...", LogLevel.Info);
                     
-                    // Si isDeviceConnected == true, StartSession() ya hizo el 0x64/1 y 0x65
-                    // Si isDeviceConnected == false, StartSession() también hizo el 0x64/1 y 0x65
-                    // Por lo tanto, NO necesitamos hacer 0x64/1 de nuevo aquí
-                    // ReadPitAutomatic() hará el 0x64/3 (cambio de modo) y luego el 0x61 (pedir PIT)
-                    Log?.Invoke("<ID:0/001> Reading PIT automatically (session already established)...", LogLevel.Info);
-                    byte[] pitData = await OdinEngine.ReadPitAutomatic(skipModeChange: false);
+                    // StartSession() ya hizo el 0x64/1 y 0x65
+                    // Ahora usamos GetPitForMapping() que implementa el protocolo 0x65 correcto:
+                    // 0x65,1 (obtener tamaño) -> 0x65,2 (leer fragmentos) -> 0x65,3 (finalizar)
+                    Log?.Invoke("<ID:0/001> Reading PIT using protocol 0x65 (GetPitForMapping)...", LogLevel.Info);
+                    byte[] pitData = await OdinEngine.GetPitForMapping();
                     
                     if (pitData != null && pitData.Length > 0)
                     {

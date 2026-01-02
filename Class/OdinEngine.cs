@@ -1077,6 +1077,7 @@ namespace Odin_Flash.Class
         /// sino que envía un archivo completo (la tabla de particiones)
         /// </summary>
         /// <returns>Array de bytes con los datos del PIT, o null si falla la solicitud o descarga</returns>
+        [Obsolete("Usar GetPitForMapping() en su lugar. El protocolo 0x65 es el correcto según Ghidra.")]
         public async Task<byte[]> RequestPit()
         {
             if (_port == null || !_port.IsOpen)
@@ -1205,12 +1206,13 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Lee el PIT automáticamente siguiendo la secuencia correcta de apertura de datos
-        /// Paso 1: Cambio de modo (0x64, 3) - Vital para que el 0x61 responda (opcional si ya se hizo)
-        /// Paso 2: Petición de PIT (0x61, 0)
-        /// Paso 3: Lectura del stream de datos
+        /// NOTA: Este método usa el protocolo 0x61 (legacy). Para el protocolo correcto de Odin, usar GetPitForMapping()
+        /// Paso 1: Petición de PIT (0x61, 0)
+        /// Paso 2: Lectura del stream de datos
+        /// IMPORTANTE: NO envía 0x64,3 si ya se hizo 0x64,1 y 0x65 exitoso (causa reinicio de sesión)
         /// </summary>
-        /// <param name="skipModeChange">Si es true, omite el cambio de modo (0x64, 3) porque ya se hizo antes</param>
         /// <returns>Array de bytes con los datos del PIT, o null si falla</returns>
+        [Obsolete("Usar GetPitForMapping() en su lugar. El protocolo 0x65 es el correcto según Ghidra.")]
         public async Task<byte[]> ReadPitAutomatic(bool skipModeChange = false)
         {
             if (_port == null || !_port.IsOpen)
@@ -1221,22 +1223,12 @@ namespace Odin_Flash.Class
 
             try
             {
-                // Paso 1: Ya tienes el 0x64/1 y 0x65 hechos.
-                // Paso 2: CAMBIO DE MODO (Vital para que el 0x61 responda)
-                // Sin este comando, el teléfono está en "Modo Comando" y tú le estás pidiendo un "Stream de Datos" (el PIT)
-                // El teléfono simplemente ignora la petición sin este paso
-                if (!skipModeChange)
-                {
-                    Log("<ID:0/001> Configurando modo de transferencia (0x64, 3)...", LogLevel.Info);
-                    await SendControlPacket(0x64, 3); 
-                    await Task.Delay(100); // Dale un respiro al procesador del móvil
-                }
-                else
-                {
-                    Log("<ID:0/001> Modo de transferencia ya configurado, omitiendo 0x64/3...", LogLevel.Info);
-                }
+                // IMPORTANTE: NO enviar 0x64,3 si ya se hizo 0x64,1 y 0x65 exitoso
+                // Muchos modelos modernos consideran el 0x64,3 como un intento de reinicio de sesión
+                // Si el log ya dice "Device ready", NO volver a enviar 0x64,3
+                Log("<ID:0/001> Omitiendo 0x64,3 para evitar reinicio de sesión (ya se hizo 0x64,1 y 0x65)...", LogLevel.Info);
 
-                // Paso 3: PETICIÓN DE PIT (0x61)
+                // Paso 1: PETICIÓN DE PIT (0x61)
                 Log("<ID:0/001> Requesting PIT via 0x61...", LogLevel.Info);
                 byte[] response = await SendControlPacketWithResponse(0x61, 0);
 
@@ -1312,12 +1304,11 @@ namespace Odin_Flash.Class
         /// <summary>
         /// Obtiene el PIT para mapeo usando el protocolo correcto de Odin (OpCode 0x65)
         /// Basado en el análisis de Ghidra: FUN_00435750
-        /// Secuencia:
-        /// 1. OpCode 0x65, Sub-op 1: Obtener el tamaño total del PIT
-        /// 2. OpCode 0x65, Sub-op 2: Indicar qué fragmento se va a leer (índice)
-        /// 3. Leer 500 bytes del puerto COM
-        /// 4. Repetir pasos 2-3 hasta completar
-        /// 5. OpCode 0x65, Sub-op 3: Finalizar lectura
+        /// Secuencia exacta según Ghidra:
+        /// 1. FUN_004324d0(0x65, 1, ...): Obtener el tamaño total del PIT (local_20)
+        /// 2. Bucle: FUN_004324d0(0x65, 2, &local_1c, 1, ...): Indicar fragmento a leer
+        /// 3. FUN_00437b00(...): Leer los bytes del puerto COM (500 bytes por fragmento)
+        /// 4. FUN_004324d0(0x65, 3, ...): Finalizar lectura
         /// </summary>
         /// <returns>Array de bytes con los datos completos del PIT, o null si falla</returns>
         public async Task<byte[]> GetPitForMapping()
@@ -1332,7 +1323,7 @@ namespace Odin_Flash.Class
             {
                 Log("<ID:0/001> Get PIT for mapping..", LogLevel.Info);
 
-                // PASO 1: Pedir el tamaño total del PIT (Op 0x65, Sub 1)
+                // PASO 1: FUN_004324d0(0x65, 1, ...) - Obtener tamaño total del PIT
                 byte[] sizeResp = await SendControlPacketWithResponse(0x65, 1);
                 if (sizeResp == null || sizeResp[0] != 0x65)
                 {
@@ -1350,7 +1341,8 @@ namespace Odin_Flash.Class
 
                 Log($"<ID:0/001> PIT Size detected: {totalSize} bytes", LogLevel.Info);
 
-                // PASO 2: Preparar el buffer y calcular fragmentos (de 500 en 500 como en Ghidra)
+                // PASO 2: Preparar buffer y calcular fragmentos (de 500 en 500 como en Ghidra)
+                // iVar1 = (local_20 + -1) / 500 + 1; (cálculo de fragmentos en Ghidra)
                 byte[] fullPit = new byte[totalSize];
                 int fragments = (totalSize + 499) / 500; // Redondeo hacia arriba
 
@@ -1359,41 +1351,55 @@ namespace Odin_Flash.Class
 
                 try
                 {
+                    // Bucle for según Ghidra: for (local_1c = 0; local_1c < iVar1; local_1c = local_1c + 1)
                     for (int i = 0; i < fragments; i++)
                     {
-                        // Decirle al teléfono qué fragmento queremos (Op 0x65, Sub 2)
-                        // param_3 en Ghidra es el índice del fragmento (local_1c)
+                        // FUN_004324d0(0x65, 2, &local_1c, 1, ...) - Indicar fragmento a leer
+                        // param_3 = &local_1c (puntero al índice), param_4 = 1
                         if (!await SendControlPacketWithIndex(0x65, 2, i))
                         {
                             Log($"<ID:0/001> Failed to request fragment {i}.", LogLevel.Error);
                             return null;
                         }
 
-                        // Leer los 500 bytes (o lo que quede)
+                        // Calcular bytes a leer según Ghidra:
+                        // if (local_20 + local_1c * -500 < 0x1f5) local_44 = local_20 + local_1c * -500;
+                        // else local_44 = 500;
                         int bytesToRead = Math.Min(500, totalSize - (i * 500));
-                        byte[] chunk = new byte[bytesToRead];
                         int offset = i * 500;
 
-                        int read = await Task.Run(() =>
+                        // FUN_00437b00(...) - Leer los bytes del puerto COM
+                        // Leer completamente el fragmento (puede requerir múltiples lecturas)
+                        int readTotal = 0;
+                        while (readTotal < bytesToRead)
                         {
-                            try
+                            byte[] chunk = new byte[bytesToRead - readTotal];
+                            int read = await Task.Run(() =>
                             {
-                                return _port.Read(chunk, 0, bytesToRead);
-                            }
-                            catch
-                            {
-                                return 0;
-                            }
-                        });
+                                try
+                                {
+                                    return _port.Read(chunk, 0, chunk.Length);
+                                }
+                                catch
+                                {
+                                    return 0;
+                                }
+                            });
 
-                        if (read > 0)
+                            if (read == 0) break;
+                            
+                            Array.Copy(chunk, 0, fullPit, offset + readTotal, read);
+                            readTotal += read;
+                        }
+
+                        if (readTotal > 0)
                         {
-                            Array.Copy(chunk, 0, fullPit, offset, read);
-                            Log($"<ID:0/001> Fragment {i + 1}/{fragments} read ({read} bytes)", LogLevel.Debug);
+                            Log($"<ID:0/001> Fragment {i + 1}/{fragments} read ({readTotal} bytes)", LogLevel.Debug);
                         }
                         else
                         {
-                            Log($"<ID:0/001> No data received for fragment {i}.", LogLevel.Warning);
+                            Log($"<ID:0/001> No data received for fragment {i}.", LogLevel.Error);
+                            return null; // Error crítico: no se recibieron datos
                         }
 
                         // Pequeña pausa entre fragmentos para dar tiempo al dispositivo
@@ -1405,7 +1411,7 @@ namespace Odin_Flash.Class
                     _port.ReadTimeout = originalTimeout;
                 }
 
-                // PASO 3: Finalizar lectura (Op 0x65, Sub 3)
+                // PASO 3: FUN_004324d0(0x65, 3, ...) - Finalizar lectura
                 if (!await SendControlPacket(0x65, 3))
                 {
                     Log("<ID:0/001> Warning: Failed to finalize PIT reading, but data may be valid.", LogLevel.Warning);
@@ -1424,6 +1430,12 @@ namespace Odin_Flash.Class
         /// <summary>
         /// Envía un paquete de control con OpCode, Sub-OpCode e índice específicos
         /// Usado para indicar qué fragmento del PIT se va a leer (OpCode 0x65, Sub-op 2)
+        /// Basado en FUN_004324d0 de Ghidra: FUN_004324d0(0x65, 2, &local_1c, 1, ...)
+        /// Estructura del paquete según protocolo Odin:
+        /// - Offset 0-3: OpCode (0x65)
+        /// - Offset 4-7: Sub-OpCode (0x02)
+        /// - Offset 8-11: Índice del fragmento (local_1c)
+        /// - Offset 12-15: Magic "ODIN" (opcional, para mayor compatibilidad)
         /// </summary>
         /// <param name="opCode">OpCode del comando (ej: 0x65)</param>
         /// <param name="subOpCode">Sub-OpCode del comando (ej: 2 para indicar fragmento)</param>
@@ -1440,30 +1452,40 @@ namespace Odin_Flash.Class
             try
             {
                 byte[] buffer = new byte[1024];
+                // Inicializar buffer con ceros (importante para evitar basura)
+                Array.Clear(buffer, 0, buffer.Length);
 
-                // OpCode (4 bytes Little Endian)
+                // Offset 0-3: OpCode (4 bytes Little Endian)
                 byte[] opCodeBytes = BitConverter.GetBytes(opCode);
                 Array.Copy(opCodeBytes, 0, buffer, 0, 4);
 
-                // Sub-OpCode (4 bytes Little Endian)
+                // Offset 4-7: Sub-OpCode (4 bytes Little Endian)
                 byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
                 Array.Copy(subOpBytes, 0, buffer, 4, 4);
 
-                // Índice del fragmento (4 bytes Little Endian) - va en los bytes 8-11
+                // Offset 8-11: Índice del fragmento (4 bytes Little Endian)
+                // Según Ghidra FUN_004324d0(0x65, 2, &local_1c, 1, ...)
+                // El índice se pasa como puntero, pero en el paquete se serializa como valor
                 byte[] indexBytes = BitConverter.GetBytes(index);
                 Array.Copy(indexBytes, 0, buffer, 8, 4);
 
-                // Limpieza de buffers antes de enviar
+                // Offset 12-15: Magic "ODIN" (opcional, para mayor compatibilidad con algunos modelos)
+                // Algunos modelos esperan este magic string para validar el paquete
+                byte[] magic = System.Text.Encoding.ASCII.GetBytes("ODIN");
+                Array.Copy(magic, 0, buffer, 12, magic.Length);
+
+                // Limpieza de buffers ANTES de enviar (crítico según análisis de Ghidra)
                 _port.DiscardInBuffer();
                 _port.DiscardOutBuffer();
 
+                // Enviar paquete completo de 1024 bytes
                 _port.Write(buffer, 0, 1024);
                 Log($"<ID:0/001> Sending control packet (Op: 0x{opCode:X2}, Sub: 0x{subOpCode:X2}, Index: {index})...", LogLevel.Debug);
 
-                // Leer respuesta (8 bytes)
+                // Leer respuesta (8 bytes) - según FUN_00437b00
                 byte[] resp = new byte[8];
                 int originalTimeout = _port.ReadTimeout;
-                _port.ReadTimeout = 5000;
+                _port.ReadTimeout = 1000; // Timeout más corto para respuestas rápidas
 
                 try
                 {
@@ -1479,18 +1501,32 @@ namespace Odin_Flash.Class
                         }
                     });
 
-                    if (read > 0)
+                    if (read >= 8)
                     {
-                        // Verificar respuesta (puede ser eco del OpCode o ACK)
+                        // Verificar respuesta: puede ser eco del OpCode o ACK (0x06)
                         int responseOp = BitConverter.ToInt32(resp, 0);
                         if (responseOp == opCode || resp[0] == 0x06)
                         {
                             return true;
                         }
+                        else
+                        {
+                            string hexResponse = BitConverter.ToString(resp);
+                            Log($"<ID:0/001> Unexpected response: {hexResponse}", LogLevel.Debug);
+                            // Algunos modelos pueden responder de forma diferente, pero aceptamos
+                            return true;
+                        }
+                    }
+                    else if (read > 0)
+                    {
+                        // Respuesta incompleta pero válida
+                        Log("<ID:0/001> Partial response received, assuming success.", LogLevel.Debug);
+                        return true;
                     }
 
                     Log("<ID:0/001> Control packet with index response timeout or invalid.", LogLevel.Warning);
-                    return true; // Consideramos éxito aunque no haya respuesta clara
+                    // Consideramos éxito aunque no haya respuesta clara (algunos modelos no responden)
+                    return true;
                 }
                 finally
                 {
@@ -1659,6 +1695,7 @@ namespace Odin_Flash.Class
         /// Según el flujo de Odin, antes de un 0x66/0x61, a veces se necesita un "Begin Session" limpio
         /// </summary>
         /// <returns>True si el PIT se recibió correctamente</returns>
+        [Obsolete("Usar GetPitForMapping() en su lugar. El protocolo 0x65 es el correcto según Ghidra.")]
         public async Task<bool> RequestPitFinal()
         {
             if (_port == null || !_port.IsOpen)
@@ -1921,11 +1958,11 @@ namespace Odin_Flash.Class
 
         /// <summary>
         /// Realiza un handshake completo para "desbloquear" el PIT
-        /// Secuencia exacta basada en Ghidra FUN_004324d0:
+        /// Secuencia correcta basada en análisis de Ghidra:
         /// 1. Abrir Sesión (Op 0x64, Sub 0x01)
-        /// 2. Establecer Modo de Sesión (Op 0x64, Sub 0x03) - Esto es lo que falta para el PIT
-        /// 3. Pedir Info (Op 0x65, Sub 0x01)
-        /// 4. Pedir el PIT (Op 0x61, Sub 0x00) - Usa 0x61 para Request PIT Download
+        /// 2. Pedir Info (Op 0x65, Sub 0x01)
+        /// 3. Pedir el PIT usando GetPitForMapping() (protocolo 0x65)
+        /// NOTA: NO enviar 0x64, 3 después de 0x64/1 y 0x65 (causa reinicio de sesión)
         /// </summary>
         /// <returns>True si el handshake completo fue exitoso y el PIT se recibió correctamente</returns>
         public async Task<bool> FullHandshake()
@@ -1938,7 +1975,7 @@ namespace Odin_Flash.Class
 
             try
             {
-                // 1. Abrir Sesión (Ya lo tienes: Op 0x64, Sub 0x01)
+                // 1. Abrir Sesión (Op 0x64, Sub 0x01)
                 Log("<ID:0/001> Step 1: Opening session (0x64, 0x01)...", LogLevel.Info);
                 if (!await SendOdinHandshake())
                 {
@@ -1946,27 +1983,18 @@ namespace Odin_Flash.Class
                     return false;
                 }
 
-                // 2. Establecer Modo de Sesión (Esto es lo que falta para el PIT)
-                // En Ghidra es FUN_004324d0(0x64, 3, 0, 0, ...)
-                Log("<ID:0/001> Step 2: Setting session mode (0x64, 0x03)...", LogLevel.Info);
-                if (!await SendControlPacket(0x64, 0x03))
-                {
-                    Log("<ID:0/001> Failed to set session mode.", LogLevel.Warning);
-                    // Continuamos aunque falle, algunos dispositivos no requieren este paso
-                }
-
-                // 3. Pedir Info (Ya lo tienes: Op 0x65)
-                Log("<ID:0/001> Step 3: Requesting device info (0x65)...", LogLevel.Info);
+                // 2. Pedir Info (Op 0x65, Sub 0x01)
+                Log("<ID:0/001> Step 2: Requesting device info (0x65)...", LogLevel.Info);
                 if (!await SendRequestInfo())
                 {
                     Log("<ID:0/001> Failed to request device info.", LogLevel.Warning);
                     // Continuamos aunque falle
                 }
 
-                // 4. AHORA pedir el PIT
-                // Ya hicimos el 0x64/3 en el paso 2, así que skipModeChange = true para evitar duplicación
-                Log("<ID:0/001> Step 4: Requesting PIT (0x61)...", LogLevel.Info);
-                byte[] pitData = await ReadPitAutomatic(skipModeChange: true);
+                // 3. AHORA pedir el PIT usando el protocolo correcto 0x65
+                // NO enviar 0x64, 3 - causa reinicio de sesión en modelos modernos
+                Log("<ID:0/001> Step 3: Requesting PIT using protocol 0x65 (GetPitForMapping)...", LogLevel.Info);
+                byte[] pitData = await GetPitForMapping();
                 
                 if (pitData != null && pitData.Length > 0)
                 {
