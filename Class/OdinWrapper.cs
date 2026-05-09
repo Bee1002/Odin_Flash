@@ -147,6 +147,17 @@ namespace Odin_Flash.Class
         public static async Task<bool> LOKE_InitializeAsync(OdinEngine engine, long size)
         {
             if (engine == null) return false;
+            
+            // Si la sesión ya está activa (puerto abierto), no intentar reinicializar
+            // Esto evita fallos después de GetPitForMapping() que ya estableció la sesión
+            var currentPort = engine.GetCurrentPort();
+            if (currentPort != null && currentPort.IsOpen)
+            {
+                // La sesión ya está activa, solo verificar que el puerto sigue respondiendo
+                return true;
+            }
+            
+            // Si no hay sesión activa, inicializar normalmente
             return await engine.InitializeCommunicationAsync();
         }
 

@@ -635,11 +635,54 @@ namespace Odin_Flash.Controls
                         }
                     }
 
+                    // NO leer el PIT de nuevo si ya lo obtuvimos con GetPitForMapping()
+                    // El PIT ya fue leído y parseado, usar esos datos directamente
                     Log?.Invoke("Reading Pit from device : ", LogLevel.Info);
-                    var GetPit = await Odin_Flash.Class.OdinEngineWrappers.Read_PitAsync(OdinEngine);
-                    if (GetPit.Result)
+                    bool pitReadSuccess = false;
+                    byte[] finalPitData = null;
+                    
+                    if (pitData != null && pitData.Length > 0)
                     {
-                        Log?.Invoke("Ok", LogLevel.Success);
+                        // Ya tenemos el PIT de GetPitForMapping(), usarlo directamente
+                        Log?.Invoke("Ok (using PIT from GetPitForMapping)", LogLevel.Success);
+                        finalPitData = pitData;
+                        pitReadSuccess = true;
+                    }
+                    else
+                    {
+                        // Si GetPitForMapping() falló, intentar leer con Read_PitAsync como fallback
+                        var GetPit = await Odin_Flash.Class.OdinEngineWrappers.Read_PitAsync(OdinEngine);
+                        if (GetPit.Result)
+                        {
+                            Log?.Invoke("Ok", LogLevel.Success);
+                            finalPitData = GetPit.data;
+                            pitReadSuccess = true;
+                        }
+                        else
+                        {
+                            Log?.Invoke("Failed", LogLevel.Error);
+                        }
+                    }
+                    
+                    if (pitReadSuccess)
+                    {
+                        // PASO A: Validación Pre-Flight (equivalente a FUN_00435de0 - CFile::Open)
+                        // Verificar que todos los archivos existan y sean legibles antes de iniciar el flasheo
+                        List<string> filesToValidate = ListFlash.Where(f => f.Enable).Select(f => f.FilePath).ToList();
+                        if (filesToValidate.Count > 0)
+                        {
+                            Log?.Invoke("<ID:0/001> Validating files (Pre-Flight Check)...", LogLevel.Info);
+                            if (!OdinEngine.ValidateFilesPreFlight(filesToValidate))
+                            {
+                                Log?.Invoke("Failed to Initialize", LogLevel.Error);
+                                return; // Si algún archivo falla, detener el proceso
+                            }
+                        }
+
+                        // El Sleep(100) ya está implementado en GetPitForMapping() después de leer el PIT
+                        // Esto permite que el puerto COM procese completamente el cierre del PIT
+                        // antes de iniciar la inicialización del flasheo
+
                         var EfsClearInt = 0;
                         var BootUpdateInt = 0;
                         if (EfsClear.IsChecked == true)
@@ -651,8 +694,8 @@ namespace Odin_Flash.Controls
                             BootUpdateInt = 1;
                         }
 
-                        // Flashear archivos uno por uno con delays apropiados según el tamaño
-                        // Migración: Ahora usamos OdinEngine para todos los archivos
+                        // PASO B: Bucle de Flasheo (equivalente a FUN_00433880)
+                        // Flashear archivos uno por uno usando el protocolo de 3 pasos (Op 0x66)
                         bool allFilesFlashed = true;
                         int totalFiles = ListFlash.Count(f => f.Enable);
                         int currentFile = 0;
@@ -676,19 +719,13 @@ namespace Odin_Flash.Controls
                             
                             bool success;
                             
-                            // Usar OdinEngine para todos los archivos (migración completa)
+                            // Usar WritePartitionData que implementa la lógica de FUN_00433880
+                            // Incluye: Start NAND Write -> Bucle de datos (0x66) -> Cierre de archivo
                             if (OdinEngine != null)
                             {
-                                // Verificar si el archivo existe
-                                if (!File.Exists(file.FilePath))
-                                {
-                                    Log?.Invoke($"Archivo no encontrado: {file.FilePath}", LogLevel.Error);
-                                    allFilesFlashed = false;
-                                    continue;
-                                }
-
-                                // Usar SendFileWithLokeProtocol para enviar el archivo
-                                success = await OdinEngine.SendFileWithLokeProtocol(file.FilePath, file.RawSize);
+                                // WritePartitionData ya valida que el archivo exista internamente
+                                // Usa FlashStreamAsync que implementa el protocolo de 3 pasos (Op 0x66)
+                                success = await OdinEngine.WritePartitionData(file.FilePath, file.RawSize, file.FileName);
                             }
                             else
                             {

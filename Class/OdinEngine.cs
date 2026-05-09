@@ -27,6 +27,10 @@ namespace Odin_Flash.Class
         /// </summary>
         public event Action<string, LogLevel> OnLog;
         
+        // Almacenamiento del PIT parseado para búsqueda de índices de partición
+        private Dictionary<string, uint> _partitionIndexMap = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+        private byte[] _currentPitData = null;
+        
         /// <summary>
         /// Evento de progreso de transferencia (current, total)
         /// </summary>
@@ -255,8 +259,10 @@ namespace Odin_Flash.Class
         /// <param name="stream">Stream con los datos a enviar</param>
         /// <param name="fileSize">Tamaño del archivo en bytes</param>
         /// <param name="fileName">Nombre del archivo (para logging)</param>
+        /// <param name="skipDataCommand">Si es true, no envía el comando DATA (ya se envió el comando de inicio)</param>
+        /// <param name="skipChunkSizeCommand">Si es true, no envía el comando 0x66, 0x02 en cada chunk (ya se envió antes del bucle)</param>
         /// <returns>True si la transferencia fue exitosa</returns>
-        public async Task<bool> FlashStreamAsync(Stream stream, long fileSize, string fileName = "stream")
+        public async Task<bool> FlashStreamAsync(Stream stream, long fileSize, string fileName = "stream", bool skipDataCommand = false, bool skipChunkSizeCommand = false)
         {
             if (stream == null || !stream.CanRead)
             {
@@ -277,90 +283,177 @@ namespace Odin_Flash.Class
                     }
                 }
 
-                if (!await InitializeCommunicationAsync()) return false;
-
-                Log($"Enviando comando DATA para {fileName} ({fileSize / (1024.0 * 1024.0):F2} MB)...", LogLevel.Debug);
-
-                // Paso 1: Enviar comando DATA con el tamaño total del archivo
-                if (!await LokeProtocol.SendControlPacketAsync(_port, OdinCommand.FlashData, (uint)fileSize, 0))
+                // CRÍTICO: Si skipDataCommand es true, la sesión ya está activa y NO debemos reinicializar
+                // Reinicializar aquí causaría un handshake adicional que interferiría con el protocolo 0x66
+                // que ya se inició con 0x66, 0x01 (NAND Write Start) y 0x66, 0x02 (Buffer Reserve)
+                if (!skipDataCommand)
                 {
-                    Log("Error al enviar comando DATA", LogLevel.Error);
-                    return false;
+                    // Solo inicializar si no se envió el comando de inicio (sesión nueva)
+                    if (!await InitializeCommunicationAsync()) return false;
+                }
+                else
+                {
+                    // Verificar que el puerto esté abierto (sesión ya activa)
+                    if (_port == null || !_port.IsOpen)
+                    {
+                        Log("Error: Puerto no disponible. La sesión debería estar activa.", LogLevel.Error);
+                        return false;
+                    }
+                    // Limpiar buffers sin hacer handshake (sesión ya establecida)
+                    PurgePortBuffers();
                 }
 
-                Log($"Comando DATA enviado. Iniciando transferencia de {fileName}...", LogLevel.Info);
+                // Paso 1: Enviar comando DATA solo si no se envió el comando de inicio (0x66, Sub 0x01)
+                // Si skipDataCommand es true, significa que ya se envió el comando de inicio en WritePartitionData
+                if (!skipDataCommand)
+                {
+                    Log($"Enviando comando DATA para {fileName} ({fileSize / (1024.0 * 1024.0):F2} MB)...", LogLevel.Debug);
 
-                // Paso 2: Enviar el stream en bloques
-                byte[] buffer = new byte[currentChunkSize];
+                    // Enviar comando DATA con el tamaño total del archivo
+                    if (!await LokeProtocol.SendControlPacketAsync(_port, OdinCommand.FlashData, (uint)fileSize, 0))
+                    {
+                        Log("Error al enviar comando DATA", LogLevel.Error);
+                        return false;
+                    }
+
+                    Log($"Comando DATA enviado. Iniciando transferencia de {fileName}...", LogLevel.Info);
+                }
+                else
+                {
+                    Log($"Skipping DATA command (NAND Write Start already sent). Iniciando transferencia de {fileName}...", LogLevel.Debug);
+                }
+
+                // Paso 2: Enviar el stream usando el protocolo de 3 pasos (Op 0x66)
+                // Basado en FUN_00433880 de Ghidra
+                // CRÍTICO: Odin usa estrictamente fragmentos de 131072 bytes (128 KB)
+                // Cualquier otro tamaño causa pérdida de sincronización y cierre del puerto
+                const int STANDARD_CHUNK_SIZE = 131072; // 128KB - Estándar estricto de Samsung Loke
+                int actualChunkSize = STANDARD_CHUNK_SIZE; // SIEMPRE usar 131072 bytes, sin excepciones
+                
+                byte[] buffer = new byte[actualChunkSize];
                 int bytesRead;
-                long totalSent = 0;
+                ulong totalSent = 0; // Usar ulong para manejar archivos grandes (64 bits)
+                ulong totalFileSize = (ulong)fileSize;
                 long lastProgressReport = 0;
                 const long PROGRESS_REPORT_INTERVAL = 1024 * 1024;
-                DateTime lastWriteTime = DateTime.Now;
-                const int MAX_IDLE_MS = 400;
-                uint sequenceId = 0;
+
+                Log($"Iniciando protocolo de 3 pasos (Op 0x66) para {fileName} (chunk: {actualChunkSize / 1024}KB)...", LogLevel.Info);
 
                 while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
                     try
                     {
-                        TimeSpan timeSinceLastWrite = DateTime.Now - lastWriteTime;
-                        if (timeSinceLastWrite.TotalMilliseconds > MAX_IDLE_MS)
+                        // Verificar si hemos alcanzado el tamaño total del archivo
+                        if (totalSent >= totalFileSize)
                         {
-                            if (_port.BytesToRead == 0)
-                            {
-                                try
-                                {
-                                    byte[] keepAlive = { 0x64 };
-                                    _port.Write(keepAlive, 0, 1);
-                                }
-                                catch { }
-                            }
+                            break;
                         }
 
-                        _port.Write(buffer, 0, bytesRead);
-                        totalSent += bytesRead;
-                        lastWriteTime = DateTime.Now;
-                        sequenceId++;
-
-                        // Validar ACK cada cierto intervalo (en modelos modernos)
-                        if (sequenceId % 10 == 0 && _port.BytesToRead > 0)
+                        // CRÍTICO: Para el protocolo 0x66 (NAND Write), el chunkSize DEBE ser exactamente 131,072 bytes (128KB)
+                        // Esto multiplica la velocidad por 260 según el análisis
+                        // Solo el último fragmento puede ser menor
+                        int fragmentSize = bytesRead;
+                        
+                        // Verificar que siempre leamos exactamente 131072 bytes (excepto el último chunk)
+                        bool isLastPossibleChunk = (totalSent + (ulong)bytesRead >= totalFileSize);
+                        if (bytesRead < STANDARD_CHUNK_SIZE && !isLastPossibleChunk)
                         {
-                            if (!await LokeProtocol.WaitAndVerifyAckAsync(_port, 100))
-                            {
-                                Log("ACK no recibido, pero continuando...", LogLevel.Warning);
-                            }
+                            Log($"Warning: Leídos solo {bytesRead} bytes en lugar de {STANDARD_CHUNK_SIZE}. Esto puede causar problemas de sincronización.", LogLevel.Warning);
+                        }
+                        
+                        // Ajustar el tamaño del fragmento si es el último
+                        // IMPORTANTE: Para el último chunk, puede ser menor que 131072 bytes
+                        if (totalSent + (ulong)fragmentSize > totalFileSize)
+                        {
+                            fragmentSize = (int)(totalFileSize - totalSent);
+                        }
+                        
+                        // CRÍTICO: Asegurar que el fragmentSize sea exactamente 131072 bytes para chunks intermedios
+                        // Esto es esencial para la velocidad y sincronización del protocolo 0x66
+                        // Solo permitir fragmentSize diferente a STANDARD_CHUNK_SIZE si es el último chunk
+                        bool isLastChunkCheck = (totalSent + (ulong)fragmentSize >= totalFileSize);
+                        if (fragmentSize != STANDARD_CHUNK_SIZE && !isLastChunkCheck)
+                        {
+                            Log($"Error: fragmentSize ({fragmentSize}) no es igual a STANDARD_CHUNK_SIZE ({STANDARD_CHUNK_SIZE}) y no es el último chunk. Esto causará problemas.", LogLevel.Error);
+                            return false;
+                        }
+                        
+                        // Log para confirmar el tamaño del chunk (especialmente importante para velocidad)
+                        if (fragmentSize == STANDARD_CHUNK_SIZE)
+                        {
+                            Log($"<ID:0/001> Enviando chunk de {fragmentSize / 1024}KB (estándar 128KB para protocolo 0x66 - velocidad optimizada)", LogLevel.Debug);
+                        }
+                        
+                        // CRÍTICO: Verificar que el archivo NO sea .lz4 comprimido
+                        // Si el log muestra "cache.img.lz4", significa que no se descomprimió correctamente
+                        // El teléfono detectará la cabecera LZ4 (18 4D 22 04) y abortará por seguridad
+                        if (fragmentSize > 4 && buffer[0] == 0x18 && buffer[1] == 0x4D && buffer[2] == 0x22 && buffer[3] == 0x04)
+                        {
+                            Log($"<ID:0/001> ERROR CRÍTICO: Detected LZ4 header (18 4D 22 04) in data stream!", LogLevel.Error);
+                            Log($"<ID:0/001> The file was not decompressed correctly. Aborting to prevent NAND corruption.", LogLevel.Error);
+                            return false;
                         }
 
-                        if (totalSent - lastProgressReport >= PROGRESS_REPORT_INTERVAL || totalSent == fileSize)
+                        // PASO A: Buffer Reserve (Op 0x66, Sub 0x02) - Solo si no se envió antes del bucle
+                        // NOTA CRÍTICA: El Sub 0x00 (Pre-check) NO existe en el protocolo LOKE.
+                        // Enviarlo causa que el dispositivo se desconecte (respuesta 0xFFFFFFFF).
+                        // La secuencia correcta es estrictamente: 0x02 (Reserve) -> 0x03 (Commit)
+                        // Según FUN_00433880: local_38 = ((local_58 - 1 >> 0x11) + 1) * 0x20000
+                        // Este comando avisa el tamaño del chunk que se va a enviar
+                        byte[] fragmentData = new byte[fragmentSize];
+                        Array.Copy(buffer, 0, fragmentData, 0, fragmentSize);
+
+                        if (!await SendOp66Data(fragmentData, fragmentSize, skipChunkSizeCommand))
                         {
-                            OnProgress?.Invoke(totalSent, fileSize);
-                            lastProgressReport = totalSent;
+                            Log($"Error: Falló el Buffer Reserve del fragmento (offset: {totalSent})", LogLevel.Error);
+                            return false;
                         }
 
-                        if (currentChunkSize == LokeProtocol.CHUNK_DATA && totalSent % (LokeProtocol.CHUNK_DATA * 10) == 0)
+                        // PASO C: Data Transfer + Commit (Op 0x66, Sub 0x03)
+                        // Según el análisis: El paquete 0x66, 0x03 incluye:
+                        // - Header de 32 bytes (metadatos: uStack_34, uStack_24, etc.)
+                        // - Datos del chunk después del header (32 + fragmentSize bytes total)
+                        // FUN_004324d0(0x66,3,&local_38,8,0,0,1) según FUN_00433880
+                        // CRÍTICO: Calcular correctamente si es el último chunk
+                        // El flag uStack_24 debe ser 1 solo cuando este es realmente el último fragmento
+                        bool isLastChunk = (totalSent + (ulong)fragmentSize >= totalFileSize);
+                        
+                        // Log para depuración del flag de finalización
+                        if (isLastChunk)
                         {
-                            await Task.Delay(1);
+                            Log($"<ID:0/001> Último chunk detectado. Total enviado: {totalSent + (ulong)fragmentSize}/{totalFileSize} bytes. Flag uStack_24 = 1", LogLevel.Info);
                         }
+                        
+                        if (!await SendOp66Commit(fragmentData, (uint)fragmentSize, totalSent, totalFileSize, isLastChunk))
+                        {
+                            Log($"Error: Falló el commit del fragmento (offset: {totalSent})", LogLevel.Error);
+                            return false;
+                        }
+
+                        // Actualizar contador total (lógica de 64 bits)
+                        totalSent += (ulong)fragmentSize;
+
+                        // Reportar progreso
+                        if (totalSent - (ulong)lastProgressReport >= PROGRESS_REPORT_INTERVAL || totalSent == totalFileSize)
+                        {
+                            OnProgress?.Invoke((long)totalSent, (long)totalFileSize);
+                            lastProgressReport = (long)totalSent;
+                        }
+
+                        // IMPORTANTE: Sleep(0) después de cada iteración (según auditoría de FUN_00433380)
+                        // Esto permite que el sistema operativo procese otros hilos
+                        System.Threading.Thread.Sleep(0);
                     }
                     catch (IOException ex)
                     {
                         Log($"Atasco de E/S detectado. Aplicando corrección Odin...", LogLevel.Warning);
                         if (!await RecoverPortAfterErrorAsync()) return false;
-                        try
-                        {
-                            _port.Write(buffer, 0, bytesRead);
-                            totalSent += bytesRead;
-                        }
-                        catch (Exception retryEx)
-                        {
-                            Log($"Error al reintentar: {retryEx.Message}", LogLevel.Error);
-                            return false;
-                        }
+                        // Reintentar el fragmento actual
+                        continue;
                     }
                     catch (Exception ex)
                     {
-                        Log($"Error inesperado: {ex.Message}", LogLevel.Error);
+                        Log($"Error inesperado en fragmento (offset: {totalSent}): {ex.Message}", LogLevel.Error);
                         return false;
                     }
                 }
@@ -371,7 +464,7 @@ namespace Odin_Flash.Class
                     await ClearPortAfterLargeFileAsync();
                 }
 
-                OnProgress?.Invoke(totalSent, fileSize);
+                OnProgress?.Invoke((long)totalSent, fileSize);
                 Log($"Archivo {fileName} enviado exitosamente ({fileSize / (1024.0 * 1024.0):F2} MB)", LogLevel.Success);
                 return true;
             }
@@ -535,6 +628,276 @@ namespace Odin_Flash.Class
             public override void SetLength(long value) => throw new NotSupportedException();
             public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
             public override void Flush() { }
+        }
+
+        /// <summary>
+        /// Valida que todos los archivos existan y sean legibles antes de iniciar el flasheo
+        /// Basado en FUN_00435de0 - validación pre-flight (CFile::Open)
+        /// Si algún archivo no existe o no es legible, retorna false
+        /// </summary>
+        /// <param name="filePaths">Lista de rutas de archivos a validar</param>
+        /// <returns>True si todos los archivos son válidos, False si alguno falla</returns>
+        public bool ValidateFilesPreFlight(List<string> filePaths)
+        {
+            if (filePaths == null || filePaths.Count == 0)
+            {
+                Log("No hay archivos para validar", LogLevel.Warning);
+                return true; // Si no hay archivos, no hay problema
+            }
+
+            foreach (string filePath in filePaths)
+            {
+                if (string.IsNullOrEmpty(filePath))
+                {
+                    Log("Ruta de archivo vacía o nula", LogLevel.Error);
+                    return false;
+                }
+
+                if (!File.Exists(filePath))
+                {
+                    Log($"Archivo no encontrado: {filePath}", LogLevel.Error);
+                    return false;
+                }
+
+                // Verificar que el archivo sea legible (no esté bloqueado)
+                try
+                {
+                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        // Si podemos abrir el archivo, es válido
+                    }
+                }
+                catch (IOException ex)
+                {
+                    Log($"Archivo bloqueado o no accesible: {filePath} - {ex.Message}", LogLevel.Error);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error al validar archivo {filePath}: {ex.Message}", LogLevel.Error);
+                    return false;
+                }
+            }
+
+            Log($"Validación pre-flight exitosa: {filePaths.Count} archivo(s) válido(s)", LogLevel.Success);
+            return true;
+        }
+
+        /// <summary>
+        /// Escribe datos de una partición usando el protocolo de 3 pasos (Op 0x66)
+        /// Basado en FUN_00433880 - función maestra de escritura
+        /// Implementa: Start NAND Write -> Bucle de datos (0x66) -> Cierre de archivo
+        /// </summary>
+        /// <param name="filePath">Ruta al archivo a flashear</param>
+        /// <param name="fileSize">Tamaño del archivo en bytes</param>
+        /// <param name="partitionName">Nombre de la partición destino (opcional, para logging)</param>
+        /// <returns>True si la escritura fue exitosa, False si falla</returns>
+        public async Task<bool> WritePartitionData(string filePath, long fileSize, string partitionName = null)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            {
+                Log($"Error: Archivo no encontrado o ruta inválida: {filePath}", LogLevel.Error);
+                return false;
+            }
+
+            string fileName = partitionName ?? Path.GetFileName(filePath);
+            string actualFilePath = filePath;
+            bool isLz4File = false;
+            string tempDecompressedPath = null;
+            
+            // PASO A: Descomprimir archivo .lz4 si es necesario
+            // El teléfono NO puede escribir un archivo .lz4 directamente en la memoria NAND
+            // Si se envía un archivo .lz4, el teléfono detectará la cabecera LZ4 (18 4D 22 04)
+            // y abortará por seguridad para evitar dañar la memoria
+            if (Util.Lz4Decompress.IsLz4File(filePath))
+            {
+                Log($"<ID:0/001> Detected .lz4 file: {Path.GetFileName(filePath)}", LogLevel.Info);
+                Log($"<ID:0/001> Decompressing before flashing (required: device cannot write LZ4 directly to NAND)...", LogLevel.Info);
+                isLz4File = true;
+                try
+                {
+                    tempDecompressedPath = Util.Lz4Decompress.DecompressToFile(filePath);
+                    actualFilePath = tempDecompressedPath;
+                    
+                    // Verificar que el archivo descomprimido existe y tiene contenido
+                    if (!File.Exists(actualFilePath))
+                    {
+                        Log($"<ID:0/001> Error: Decompressed file not found at {actualFilePath}", LogLevel.Error);
+                        return false;
+                    }
+                    
+                    long decompressedSize = new FileInfo(actualFilePath).Length;
+                    if (decompressedSize == 0)
+                    {
+                        Log($"<ID:0/001> Error: Decompressed file is empty", LogLevel.Error);
+                        return false;
+                    }
+                    
+                    Log($"<ID:0/001> File decompressed successfully: {decompressedSize} bytes", LogLevel.Success);
+                    Log($"<ID:0/001> Using decompressed file: {Path.GetFileName(actualFilePath)} (original: {Path.GetFileName(filePath)})", LogLevel.Info);
+                }
+                catch (Exception ex)
+                {
+                    Log($"<ID:0/001> Error decompressing .lz4 file: {ex.Message}", LogLevel.Error);
+                    return false;
+                }
+            }
+            else
+            {
+                // Verificar que el archivo NO sea .lz4 (doble verificación)
+                // A veces el nombre puede no tener extensión pero el contenido sí
+                if (File.Exists(filePath))
+                {
+                    using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+                    {
+                        byte[] header = new byte[4];
+                        if (fs.Read(header, 0, 4) == 4)
+                        {
+                            if (header[0] == 0x18 && header[1] == 0x4D && header[2] == 0x22 && header[3] == 0x04)
+                            {
+                                Log($"<ID:0/001> ERROR: File has LZ4 header but no .lz4 extension! File: {Path.GetFileName(filePath)}", LogLevel.Error);
+                                Log($"<ID:0/001> This file must be decompressed before flashing.", LogLevel.Error);
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Obtener el tamaño real del archivo en disco (equivalente a CFile::GetLength en FUN_00435de0)
+            long fileSizeInDisk = new FileInfo(actualFilePath).Length;
+            
+            // Actualizar fileName para mostrar el nombre correcto (sin .lz4 si se descomprimió)
+            // Esto evita confusión en los logs mostrando "cache.img.lz4" cuando en realidad se está flasheando la imagen descomprimida
+            // IMPORTANTE: Hacer esto ANTES de buscar el ID de partición para que busque por el nombre correcto
+            string searchName = fileName;
+            if (isLz4File)
+            {
+                // Mostrar el nombre original sin .lz4 para el log y búsqueda
+                searchName = Path.GetFileNameWithoutExtension(fileName);
+                fileName = searchName; // Actualizar fileName para logs
+                Log($"<ID:0/001> Note: Original .lz4 file was decompressed. Flashing decompressed image.", LogLevel.Info);
+            }
+            else
+            {
+                // También quitar extensión .img si existe para búsqueda
+                searchName = Path.GetFileNameWithoutExtension(fileName);
+            }
+            
+            Log($"<ID:0/001> NAND Write Start!! - {fileName}", LogLevel.Info);
+            Log($"File size to flash: {fileSizeInDisk} bytes", LogLevel.Info);
+
+            try
+            {
+                // PASO B: Enviar el paquete de inicio (Op 0x66, Sub 0x01)
+                // Este comando "reserva el espacio" y relaciona el archivo con una partición del PIT
+                // Buscar el ID real de la partición desde el PIT parseado
+                // La partición 0 es el PIT o tabla protegida, NO usar para datos
+                // Usar searchName (sin extensiones) para la búsqueda
+                uint? foundIndex = GetPartitionIndex(searchName);
+                uint partitionIndex = foundIndex ?? 0;
+                
+                if (!foundIndex.HasValue)
+                {
+                    Log($"<ID:0/001> Warning: Could not find partition ID for '{searchName}'. Using default ID 0 (may fail if partition 0 is protected).", LogLevel.Warning);
+                }
+                else
+                {
+                    Log($"<ID:0/001> Using partition ID {partitionIndex} for '{searchName}'", LogLevel.Info);
+                }
+                
+                if (!await SendOp66Start(partitionIndex, (ulong)fileSizeInDisk, 0))
+                {
+                    Log($"<ID:0/001> Failed to send NAND Write Start command", LogLevel.Error);
+                    return false;
+                }
+                
+                // PASO C: Sincronización de sesión - Delay de 50ms después de NAND Write Start
+                // Esto asegura que el teléfono ha mapeado el área de memoria antes de recibir el primer bloque
+                await Task.Delay(50);
+                
+                // PASO D: CRÍTICO - Buffer Reserve (Op 0x66, Sub 0x02) ANTES del primer bloque
+                // Según FUN_004324d0 y FUN_00433880: 
+                // local_38 = ((local_58 - 1 >> 0x11) + 1) * 0x20000
+                // FUN_004324d0(0x66, 2, &local_38, 1, 0, 0, 1)
+                // Este comando "desbloquea" la NAND para escribir y reserva el buffer
+                // Debe enviarse INMEDIATAMENTE después de aceptar el inicio (0x66, 0x01)
+                // y ANTES de empezar a enviar los bytes del archivo
+                // Calcula el tamaño del chunk alineado para el primer bloque (131072 bytes estándar)
+                const int STANDARD_CHUNK_SIZE = 131072; // 128KB (0x20000)
+                // Fórmula exacta de FUN_00433880: ((size - 1 >> 17) + 1) * 0x20000
+                uint chunkSize = (uint)(((STANDARD_CHUNK_SIZE - 1) >> 17) + 1) * 0x20000;
+                
+                // Enviar el tamaño del chunk (1 byte) con Op 0x66 Sub 0x02
+                // FUN_004324d0(0x66,2,&local_38,1,0,0,1) - envía 1 byte del tamaño
+                // El tamaño se envía como 1 byte (byte menos significativo)
+                byte[] sizeBytes = new byte[] { (byte)(chunkSize & 0xFF) };
+                byte[] sizeResponse = await SendOp66Packet(0x02, sizeBytes, 1);
+                
+                if (sizeResponse == null)
+                {
+                    Log($"<ID:0/001> Error: No se recibió respuesta al Buffer Reserve (0x66, 0x02)", LogLevel.Error);
+                    return false;
+                }
+                
+                // Verificar que no sea respuesta de error
+                uint responseValue = BitConverter.ToUInt32(sizeResponse, 0);
+                if (responseValue == 0x80000080 || (sizeResponse[0] == 0x80 && sizeResponse[3] == 0x80))
+                {
+                    Log($"<ID:0/001> Error: Dispositivo respondió con error al Buffer Reserve", LogLevel.Error);
+                    return false;
+                }
+                
+                Log($"<ID:0/001> Buffer Reserve (0x66, 0x02) sent successfully. Chunk size: {chunkSize} bytes (128KB)", LogLevel.Info);
+                
+                // Abrir archivo (equivalente a CFile::Open en FUN_00435de0)
+                using (FileStream fileStream = new FileStream(actualFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    // Según FUN_00435de0: Odin ignora el tamaño del PIT para la validación
+                    // Solo usa el nombre de la partición para saber dónde escribir
+                    // El tamaño lo obtiene del archivo real usando CFile::GetLength
+                    // Por lo tanto, NO validamos contra fileSize (que viene del PIT)
+                    // Usamos directamente el tamaño real del archivo en disco
+
+                    // Usar FlashStreamAsync que ya implementa el protocolo de 3 pasos (0x66)
+                    // Pasar el tamaño REAL del archivo en disco, no el del PIT
+                    // skipDataCommand = true porque ya enviamos el comando de inicio
+                    // skipChunkSizeCommand = true porque ya enviamos el comando de alineamiento
+                    bool success = await FlashStreamAsync(fileStream, fileSizeInDisk, fileName, skipDataCommand: true, skipChunkSizeCommand: true);
+                    
+                    if (success)
+                    {
+                        Log($"<ID:0/001> NAND Write Complete - {fileName}", LogLevel.Success);
+                    }
+                    else
+                    {
+                        Log($"<ID:0/001> NAND Write Failed - {fileName}", LogLevel.Error);
+                    }
+
+                    return success;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error crítico al escribir partición {fileName}: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+            finally
+            {
+                // Limpiar archivo temporal .lz4 descomprimido si existe
+                if (isLz4File && !string.IsNullOrEmpty(tempDecompressedPath) && File.Exists(tempDecompressedPath))
+                {
+                    try
+                    {
+                        File.Delete(tempDecompressedPath);
+                        Log($"<ID:0/001> Temporary decompressed file deleted: {Path.GetFileName(tempDecompressedPath)}", LogLevel.Debug);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"<ID:0/001> Warning: Could not delete temporary file: {ex.Message}", LogLevel.Warning);
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -1321,7 +1684,23 @@ namespace Odin_Flash.Class
 
             try
             {
-                Log("<ID:0/001> Get PIT for mapping..", LogLevel.Info);
+                Log("<ID:0/001> Iniciando lectura de flujo binario PIT...", LogLevel.Info);
+
+                // PASO 0 (Opcional según Ghidra): Erase Sector (0x64, 7) si está habilitado
+                // Según FUN_00435750: if (*(int *)(param_1 + 0x34) != 0) → FUN_004324d0(100, 7, ...)
+                // Esto prepara el dispositivo para la lectura del PIT en algunos modelos
+                // Nota: 100 decimal = 0x64 hexadecimal
+                try
+                {
+                    Log("<ID:0/001> Preparing device for PIT read (optional erase sector)...", LogLevel.Debug);
+                    await SendControlPacket(0x64, 7);
+                    await Task.Delay(100); // Pequeña pausa después del erase
+                }
+                catch (Exception eraseEx)
+                {
+                    // No es crítico si falla, continuamos de todas formas
+                    Log($"<ID:0/001> Erase sector step skipped (non-critical): {eraseEx.Message}", LogLevel.Debug);
+                }
 
                 // PASO 1: FUN_004324d0(0x65, 1, ...) - Obtener tamaño total del PIT
                 byte[] sizeResp = await SendControlPacketWithResponse(0x65, 1);
@@ -1333,6 +1712,11 @@ namespace Odin_Flash.Class
 
                 // El tamaño viene en los bytes 4-7 de la respuesta (local_20 en Ghidra)
                 int totalSize = BitConverter.ToInt32(sizeResp, 4);
+                
+                // IMPORTANTE: Aceptar 16384 (0x4000 = 16KB) como tamaño válido del buffer
+                // El teléfono responde con el tamaño real del buffer que necesita, no un DeviceID
+                // Si el teléfono responde 00-40 (16384), usar ese valor para el bucle de fragmentos
+                
                 if (totalSize <= 0)
                 {
                     Log("<ID:0/001> Invalid PIT size received.", LogLevel.Error);
@@ -1345,6 +1729,7 @@ namespace Odin_Flash.Class
                 // iVar1 = (local_20 + -1) / 500 + 1; (cálculo de fragmentos en Ghidra)
                 byte[] fullPit = new byte[totalSize];
                 int fragments = (totalSize + 499) / 500; // Redondeo hacia arriba
+                int totalBytesRead = 0; // Contador para verificar que se leyó la cantidad correcta
 
                 int originalTimeout = _port.ReadTimeout;
                 _port.ReadTimeout = 5000; // 5 segundos por fragmento
@@ -1356,6 +1741,7 @@ namespace Odin_Flash.Class
                     {
                         // FUN_004324d0(0x65, 2, &local_1c, 1, ...) - Indicar fragmento a leer
                         // param_3 = &local_1c (puntero al índice), param_4 = 1
+                        // IMPORTANTE: SendControlPacketWithIndex NO lee respuesta, solo envía
                         if (!await SendControlPacketWithIndex(0x65, 2, i))
                         {
                             Log($"<ID:0/001> Failed to request fragment {i}.", LogLevel.Error);
@@ -1368,17 +1754,19 @@ namespace Odin_Flash.Class
                         int bytesToRead = Math.Min(500, totalSize - (i * 500));
                         int offset = i * 500;
 
-                        // FUN_00437b00(...) - Leer los bytes del puerto COM
+                        // FUN_00437b00(...) - Leer los bytes del puerto COM DIRECTAMENTE
                         // Leer completamente el fragmento (puede requerir múltiples lecturas)
-                        int readTotal = 0;
-                        while (readTotal < bytesToRead)
+                        byte[] chunk = new byte[bytesToRead];
+                        int readInThisFragment = 0;
+
+                        // Bucle de lectura de puerto para asegurar que recibimos los bytes completos
+                        while (readInThisFragment < bytesToRead)
                         {
-                            byte[] chunk = new byte[bytesToRead - readTotal];
-                            int read = await Task.Run(() =>
+                            int r = await Task.Run(() =>
                             {
                                 try
                                 {
-                                    return _port.Read(chunk, 0, chunk.Length);
+                                    return _port.Read(chunk, readInThisFragment, bytesToRead - readInThisFragment);
                                 }
                                 catch
                                 {
@@ -1386,15 +1774,30 @@ namespace Odin_Flash.Class
                                 }
                             });
 
-                            if (read == 0) break;
-                            
-                            Array.Copy(chunk, 0, fullPit, offset + readTotal, read);
-                            readTotal += read;
+                            if (r == 0) break;
+                            readInThisFragment += r;
                         }
 
-                        if (readTotal > 0)
+                        // VALIDACIÓN DEL PRIMER BLOQUE (Aquí es donde está el Magic Number del PIT)
+                        // El PIT tiene una cabecera: 0x12349876 (Little Endian = 0x76, 0x98, 0x34, 0x12)
+                        if (i == 0 && readInThisFragment >= 4)
                         {
-                            Log($"<ID:0/001> Fragment {i + 1}/{fragments} read ({readTotal} bytes)", LogLevel.Debug);
+                            if (chunk[0] == 0x76 && chunk[1] == 0x98 && chunk[2] == 0x34 && chunk[3] == 0x12)
+                            {
+                                Log("<ID:0/001> ¡PIT IDENTIFICADO! Cabecera 0x12349876 detectada.", LogLevel.Success);
+                            }
+                            else
+                            {
+                                string hexHeader = BitConverter.ToString(chunk, 0, Math.Min(4, readInThisFragment));
+                                Log($"<ID:0/001> PIT header: {hexHeader} (expected: 76-98-34-12)", LogLevel.Debug);
+                            }
+                        }
+
+                        if (readInThisFragment > 0)
+                        {
+                            Array.Copy(chunk, 0, fullPit, offset, readInThisFragment);
+                            totalBytesRead += readInThisFragment; // Acumular bytes leídos
+                            Log($"<ID:0/001> Fragment {i + 1}/{fragments} read ({readInThisFragment} bytes)", LogLevel.Debug);
                         }
                         else
                         {
@@ -1417,7 +1820,37 @@ namespace Odin_Flash.Class
                     Log("<ID:0/001> Warning: Failed to finalize PIT reading, but data may be valid.", LogLevel.Warning);
                 }
 
-                Log("<ID:0/001> PIT read and mapped successfully.", LogLevel.Success);
+                // VERIFICACIÓN CRÍTICA: Asegurar que se leyó la cantidad correcta de bytes
+                // La función debe retornar true (datos válidos) solo si leyó la cantidad que el teléfono reportó
+                if (totalBytesRead != totalSize)
+                {
+                    Log($"<ID:0/001> Error: PIT size mismatch. Expected {totalSize} bytes, but only read {totalBytesRead} bytes.", LogLevel.Error);
+                    return null;
+                }
+
+                Log($"<ID:0/001> PIT read and mapped successfully ({totalSize} bytes, {fragments} fragments).", LogLevel.Success);
+
+                // Guardar PIT en disco para análisis posterior
+                try
+                {
+                    string fileName = $"dump_{DateTime.Now:yyyyMMdd_HHmmss}.pit";
+                    File.WriteAllBytes(fileName, fullPit);
+                    Log($"<ID:0/001> PIT guardado en el disco como: {fileName}", LogLevel.Success);
+                }
+                catch (Exception saveEx)
+                {
+                    Log($"<ID:0/001> Warning: No se pudo guardar el PIT en disco: {saveEx.Message}", LogLevel.Warning);
+                    // Continuamos aunque falle el guardado, el PIT ya está en memoria
+                }
+
+                // Analizar y mostrar información del PIT
+                ParsePitData(fullPit);
+
+                // IMPORTANTE: Sleep(100) obligatorio después de leer PIT (según FUN_0042e470)
+                // Esto permite que el puerto COM procese completamente el cierre del PIT
+                // antes de iniciar la inicialización del flasheo
+                System.Threading.Thread.Sleep(100);
+
                 return fullPit;
             }
             catch (Exception ex)
@@ -1425,6 +1858,192 @@ namespace Odin_Flash.Class
                 Log($"<ID:0/001> Error in GetPitForMapping: {ex.Message}", LogLevel.Error);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Parsea los datos del PIT para extraer información de particiones
+        /// Procesa el array de bytes del PIT y extrae los nombres de particiones y archivos .img asociados
+        /// Almacena un mapa de nombre de partición -> ID para búsqueda rápida
+        /// Estructura del PIT según análisis:
+        /// - Header: 28 bytes (Magic Number + Entry Count)
+        /// - Cada entrada: 132 bytes
+        ///   - Offset 0x00: 4 bytes - Binary Type
+        ///   - Offset 0x04: 4 bytes - Device Type
+        ///   - Offset 0x08: 4 bytes - Identifier / ID (el número de partición que necesitamos)
+        ///   - Offset 0x33 (51): 32 bytes - Partition Name (ej: "CACHE")
+        /// </summary>
+        /// <param name="pitData">Array de bytes con los datos completos del PIT</param>
+        public void ParsePitData(byte[] pitData)
+        {
+            if (pitData == null || pitData.Length < 28)
+            {
+                Log("<ID:0/001> PIT data is null or too small to parse.", LogLevel.Warning);
+                return;
+            }
+
+            try
+            {
+                // Limpiar mapa anterior y almacenar nuevo PIT
+                _partitionIndexMap.Clear();
+                _currentPitData = pitData;
+                
+                // El Magic Number ya lo validamos en GetPitForMapping, empezamos desde el offset 28
+                // Cada entrada de partición en un PIT moderno mide 132 bytes
+                const int ENTRY_SIZE = 132;
+                int headerOffset = 28;
+
+                // El número de entradas está en el offset 4 del header
+                int entryCount = BitConverter.ToInt32(pitData, 4);
+                Log($"<ID:0/001> Parsing PIT: {entryCount} partitions found.", LogLevel.Info);
+
+                for (int i = 0; i < entryCount; i++)
+                {
+                    int currentEntryOffset = headerOffset + (i * ENTRY_SIZE);
+
+                    // Si nos pasamos del tamaño del array, salimos
+                    if (currentEntryOffset + ENTRY_SIZE > pitData.Length)
+                    {
+                        Log($"<ID:0/001> Warning: Entry {i} exceeds PIT data size. Stopping parse.", LogLevel.Warning);
+                        break;
+                    }
+
+                    // Extraer ID de la Partición (Offset 0x08 = 8 bytes dentro de la entrada)
+                    // Este es el número de partición que debemos usar en el comando 0x66, Sub 0x01
+                    int partitionId = BitConverter.ToInt32(pitData, currentEntryOffset + 0x08);
+                    
+                    // Extraer Nombre de la Partición (Offset 0x33 = 51 bytes dentro de la entrada)
+                    // Limpiar caracteres nulos y espacios
+                    string partitionName = System.Text.Encoding.ASCII.GetString(pitData, currentEntryOffset + 0x33, 32)
+                        .Replace("\0", "").Trim();
+
+                    // Extraer Nombre del Archivo Flash (Offset 64 dentro de la entrada)
+                    string flashName = System.Text.Encoding.ASCII.GetString(pitData, currentEntryOffset + 64, 32).TrimEnd('\0');
+
+                    if (!string.IsNullOrEmpty(partitionName))
+                    {
+                        // Almacenar el ID de la partición usando el nombre como clave
+                        // Usar tanto el nombre de partición como el flash name para búsqueda
+                        _partitionIndexMap[partitionName] = (uint)partitionId;
+                        
+                        if (!string.IsNullOrEmpty(flashName))
+                        {
+                            try
+                            {
+                                // También mapear por flash name sin extensión (ej: "cache.img" -> "cache")
+                                // Validar y limpiar el nombre antes de usar Path.GetFileNameWithoutExtension
+                                string cleanFlashName = flashName.Trim();
+                                // Eliminar caracteres inválidos para rutas
+                                char[] invalidChars = Path.GetInvalidFileNameChars();
+                                foreach (char c in invalidChars)
+                                {
+                                    cleanFlashName = cleanFlashName.Replace(c.ToString(), "");
+                                }
+                                
+                                if (!string.IsNullOrEmpty(cleanFlashName))
+                                {
+                                    string flashNameWithoutExt = Path.GetFileNameWithoutExtension(cleanFlashName);
+                                    if (!string.IsNullOrEmpty(flashNameWithoutExt))
+                                    {
+                                        _partitionIndexMap[flashNameWithoutExt] = (uint)partitionId;
+                                        // También mapear en minúsculas para búsqueda case-insensitive
+                                        _partitionIndexMap[flashNameWithoutExt.ToLower()] = (uint)partitionId;
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                // Si hay error al procesar flashName, continuar sin mapearlo
+                                Log($"<ID:0/001> Warning: Could not process flash name '{flashName}' for partition {partitionId}: {ex.Message}", LogLevel.Debug);
+                            }
+                        }
+                        
+                        Log($"[PIT] Partition[{partitionId}]: {partitionName.PadRight(12)} | Flash Name: {flashName}", LogLevel.Info);
+                    }
+                }
+
+                Log($"<ID:0/001> PIT parsing completed successfully. {_partitionIndexMap.Count} partitions indexed.", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                Log($"<ID:0/001> Error parsing PIT data: {ex.Message}", LogLevel.Error);
+            }
+        }
+        
+        /// <summary>
+        /// Obtiene el ID real de una partición desde el PIT parseado basándose en el nombre del archivo
+        /// Busca por nombre de partición (ej: "CACHE") o por nombre de archivo (ej: "cache.img")
+        /// </summary>
+        /// <param name="fileName">Nombre del archivo o partición a buscar (ej: "cache.img", "CACHE")</param>
+        /// <returns>ID de la partición si se encuentra, null si no se encuentra</returns>
+        private uint? GetPartitionIndex(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName) || _partitionIndexMap.Count == 0)
+            {
+                return null;
+            }
+
+            // Limpiar el nombre de caracteres inválidos
+            string cleanName = fileName.Trim();
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+            foreach (char c in invalidChars)
+            {
+                cleanName = cleanName.Replace(c.ToString(), "");
+            }
+
+            // Intentar buscar por nombre de archivo sin extensión
+            string nameWithoutExt = Path.GetFileNameWithoutExtension(cleanName);
+            
+            // Estrategia de búsqueda múltiple (case-insensitive):
+            // 1. Buscar por nombre sin extensión exacto (ej: "cache")
+            if (!string.IsNullOrEmpty(nameWithoutExt))
+            {
+                if (_partitionIndexMap.ContainsKey(nameWithoutExt))
+                {
+                    uint index = _partitionIndexMap[nameWithoutExt];
+                    Log($"<ID:0/001> Found partition ID {index} for '{nameWithoutExt}'", LogLevel.Debug);
+                    return index;
+                }
+                
+                // 2. Buscar en minúsculas (ej: "cache")
+                string lowerName = nameWithoutExt.ToLower();
+                if (_partitionIndexMap.ContainsKey(lowerName))
+                {
+                    uint index = _partitionIndexMap[lowerName];
+                    Log($"<ID:0/001> Found partition ID {index} for '{lowerName}' (lowercase)", LogLevel.Debug);
+                    return index;
+                }
+                
+                // 3. Buscar en mayúsculas (ej: "CACHE")
+                string upperName = nameWithoutExt.ToUpper();
+                if (_partitionIndexMap.ContainsKey(upperName))
+                {
+                    uint index = _partitionIndexMap[upperName];
+                    Log($"<ID:0/001> Found partition ID {index} for '{upperName}' (uppercase)", LogLevel.Debug);
+                    return index;
+                }
+            }
+            
+            // 4. Buscar por nombre completo del archivo (sin extensión ya procesado arriba)
+            if (_partitionIndexMap.ContainsKey(cleanName))
+            {
+                uint index = _partitionIndexMap[cleanName];
+                Log($"<ID:0/001> Found partition ID {index} for '{cleanName}'", LogLevel.Debug);
+                return index;
+            }
+            
+            // 5. Búsqueda case-insensitive en todo el mapa
+            foreach (var kvp in _partitionIndexMap)
+            {
+                if (string.Equals(kvp.Key, nameWithoutExt, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(kvp.Key, cleanName, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log($"<ID:0/001> Found partition ID {kvp.Value} for '{kvp.Key}' (case-insensitive match)", LogLevel.Debug);
+                    return kvp.Value;
+                }
+            }
+            
+            // No se encontró - no mostrar warning duplicado (ya se muestra en WritePartitionData)
+            return null;
         }
 
         /// <summary>
@@ -1436,11 +2055,15 @@ namespace Odin_Flash.Class
         /// - Offset 4-7: Sub-OpCode (0x02)
         /// - Offset 8-11: Índice del fragmento (local_1c)
         /// - Offset 12-15: Magic "ODIN" (opcional, para mayor compatibilidad)
+        /// 
+        /// IMPORTANTE: Este método SOLO envía el paquete. NO lee la respuesta porque
+        /// si lee 8 bytes aquí, se "comería" los primeros 8 bytes del PIT (donde está el Magic Number).
+        /// La lectura de datos se hace directamente en GetPitForMapping() después de enviar la petición.
         /// </summary>
         /// <param name="opCode">OpCode del comando (ej: 0x65)</param>
         /// <param name="subOpCode">Sub-OpCode del comando (ej: 2 para indicar fragmento)</param>
         /// <param name="index">Índice del fragmento a leer</param>
-        /// <returns>True si el comando se envió correctamente y fue aceptado</returns>
+        /// <returns>True si el paquete se envió correctamente</returns>
         private async Task<bool> SendControlPacketWithIndex(uint opCode, uint subOpCode, int index)
         {
             if (_port == null || !_port.IsOpen)
@@ -1482,56 +2105,10 @@ namespace Odin_Flash.Class
                 _port.Write(buffer, 0, 1024);
                 Log($"<ID:0/001> Sending control packet (Op: 0x{opCode:X2}, Sub: 0x{subOpCode:X2}, Index: {index})...", LogLevel.Debug);
 
-                // Leer respuesta (8 bytes) - según FUN_00437b00
-                byte[] resp = new byte[8];
-                int originalTimeout = _port.ReadTimeout;
-                _port.ReadTimeout = 1000; // Timeout más corto para respuestas rápidas
-
-                try
-                {
-                    int read = await Task.Run(() =>
-                    {
-                        try
-                        {
-                            return _port.Read(resp, 0, 8);
-                        }
-                        catch
-                        {
-                            return 0;
-                        }
-                    });
-
-                    if (read >= 8)
-                    {
-                        // Verificar respuesta: puede ser eco del OpCode o ACK (0x06)
-                        int responseOp = BitConverter.ToInt32(resp, 0);
-                        if (responseOp == opCode || resp[0] == 0x06)
-                        {
-                            return true;
-                        }
-                        else
-                        {
-                            string hexResponse = BitConverter.ToString(resp);
-                            Log($"<ID:0/001> Unexpected response: {hexResponse}", LogLevel.Debug);
-                            // Algunos modelos pueden responder de forma diferente, pero aceptamos
-                            return true;
-                        }
-                    }
-                    else if (read > 0)
-                    {
-                        // Respuesta incompleta pero válida
-                        Log("<ID:0/001> Partial response received, assuming success.", LogLevel.Debug);
-                        return true;
-                    }
-
-                    Log("<ID:0/001> Control packet with index response timeout or invalid.", LogLevel.Warning);
-                    // Consideramos éxito aunque no haya respuesta clara (algunos modelos no responden)
-                    return true;
-                }
-                finally
-                {
-                    _port.ReadTimeout = originalTimeout;
-                }
+                // CRÍTICO: NO leer respuesta aquí. Si leemos 8 bytes, nos "comemos" los primeros
+                // 8 bytes del PIT que contienen el Magic Number (0x12349876).
+                // La lectura de datos se hace directamente en GetPitForMapping() después de enviar.
+                return true;
             }
             catch (Exception ex)
             {
@@ -1954,6 +2531,635 @@ namespace Odin_Flash.Class
                 Log($"<ID:0/001> Error sending control packet: {ex.Message}", LogLevel.Error);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Envía el comando de inicio de NAND Write (Op 0x66, Sub 0x01)
+        /// Basado en FUN_00433880: Antes de iniciar el bucle de datos, se envía un paquete de "reserva de espacio"
+        /// que contiene: Índice de partición, Tamaño total (64 bits), Dirección de inicio
+        /// </summary>
+        /// <param name="partitionIndex">Índice de la partición en el PIT (por defecto 0)</param>
+        /// <param name="fileSize">Tamaño total del archivo en bytes (64 bits)</param>
+        /// <param name="startAddress">Dirección de inicio (normalmente 0 para archivos binarios)</param>
+        /// <returns>True si el comando fue aceptado, False si falla</returns>
+        private async Task<bool> SendOp66Start(uint partitionIndex, ulong fileSize, ulong startAddress = 0)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar comando Op 0x66 Sub 0x01", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                // Estructura del paquete de inicio según análisis específico para MediaTek MT6853:
+                // - Offset 0-3: ID de la partición (4 bytes - Little Endian)
+                // - Offset 4-7: Tamaño del archivo (4 bytes - Little Endian, int para archivos hasta 2GB)
+                // - Offset 8-15: Resto en 0x00 (8 bytes - Inicialización del buffer de recepción)
+                // Total: 16 bytes de datos
+                byte[] startPacket = new byte[16];
+                Array.Clear(startPacket, 0, 16); // Inicializar todo en 0
+                
+                // Offset 0-3: ID de la partición (4 bytes Little Endian)
+                // El ID de la partición se obtiene del PIT parseado (ej: 54 para 'cache')
+                byte[] indexBytes = BitConverter.GetBytes((uint)partitionIndex);
+                Array.Copy(indexBytes, 0, startPacket, 0, 4);
+                
+                // Offset 4-7: Tamaño total del archivo .img (DESCOMPRIMIDO) en 4 bytes
+                // Es vital que este valor sea exacto al tamaño del archivo en disco
+                // NOTA: Si el archivo es >2GB, se truncará. Para archivos grandes, considerar usar 8 bytes.
+                if (fileSize > int.MaxValue)
+                {
+                    Log($"<ID:0/001> Warning: File size {fileSize} bytes exceeds int.MaxValue. Truncating to 4 bytes.", LogLevel.Warning);
+                }
+                int fileSizeInt = (int)fileSize; // Convertir a int (4 bytes)
+                byte[] sizeBytes = BitConverter.GetBytes(fileSizeInt);
+                Array.Copy(sizeBytes, 0, startPacket, 4, 4);
+                
+                // Offset 8-15: Los bytes restantes quedan en 0x00 (ya inicializado por Array.Clear)
+                // Esto inicializa el buffer de recepción del dispositivo
+                
+                // Enviar el paquete usando SendOp66Packet con Sub-op 0x01
+                byte[] response = await SendOp66Packet(0x01, startPacket, 16);
+                
+                if (response == null)
+                {
+                    Log("Error: No se recibió respuesta al comando de inicio NAND Write", LogLevel.Error);
+                    return false;
+                }
+                
+                // Verificar que no sea respuesta de error
+                uint responseValue = BitConverter.ToUInt32(response, 0);
+                if (responseValue == 0x80000080 || (response[0] == 0x80 && response[3] == 0x80))
+                {
+                    Log("Error: Dispositivo respondió con error al comando de inicio", LogLevel.Error);
+                    return false;
+                }
+                
+                Log($"NAND Write Start command accepted. Partition: {partitionIndex}, Size: {fileSize} bytes", LogLevel.Debug);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"Error al enviar comando de inicio NAND Write: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Envía un comando Op 0x66 con sub-opcode y datos opcionales (paquetes pequeños hasta 1024 bytes)
+        /// Basado en FUN_004324d0 de Ghidra - Estructura del paquete de 1024 bytes
+        /// </summary>
+        /// <param name="subOpCode">Sub-opcode del comando (0x01, 0x02, 0x03, etc.)</param>
+        /// <param name="data">Datos opcionales a enviar (null para comandos sin datos)</param>
+        /// <param name="dataLength">Longitud de los datos a enviar</param>
+        /// <returns>Respuesta del dispositivo (8 bytes) o null si falla</returns>
+        private async Task<byte[]> SendOp66Packet(uint subOpCode, byte[] data = null, int dataLength = 0)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar comando Op 0x66", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                byte[] buffer = new byte[1024];
+                Array.Clear(buffer, 0, buffer.Length);
+
+                // Offset 0-3: OpCode 0x66 (4 bytes Little Endian)
+                byte[] opCodeBytes = BitConverter.GetBytes(0x66u);
+                Array.Copy(opCodeBytes, 0, buffer, 0, 4);
+
+                // Offset 4-7: Sub-OpCode (4 bytes Little Endian)
+                byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
+                Array.Copy(subOpBytes, 0, buffer, 4, 4);
+
+                // Offset 8+: Datos opcionales (si se proporcionan)
+                if (data != null && dataLength > 0)
+                {
+                    int copyLength = Math.Min(dataLength, buffer.Length - 8);
+                    Array.Copy(data, 0, buffer, 8, copyLength);
+                }
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                _port.Write(buffer, 0, 1024);
+
+                // Leer respuesta (8 bytes)
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() =>
+                    {
+                        try
+                        {
+                            return _port.Read(resp, 0, 8);
+                        }
+                        catch
+                        {
+                            return 0;
+                        }
+                    });
+
+                    if (read >= 8)
+                    {
+                        return resp;
+                    }
+
+                    return null;
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error enviando comando Op 0x66 Sub 0x{subOpCode:X2}: {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Envía un comando Op 0x66 con sub-opcode y datos grandes (para paquetes de commit con header + datos)
+        /// Este método maneja paquetes que pueden ser mayores a 1024 bytes (ej: 32 bytes header + 131072 bytes datos)
+        /// Basado en FUN_004324d0 de Ghidra pero adaptado para paquetes grandes
+        /// </summary>
+        /// <param name="subOpCode">Sub-opcode del comando (normalmente 0x03 para commit)</param>
+        /// <param name="data">Datos completos a enviar (header + datos del chunk)</param>
+        /// <param name="dataLength">Longitud total de los datos a enviar</param>
+        /// <returns>Respuesta del dispositivo (8 bytes) o null si falla</returns>
+        private async Task<byte[]> SendOp66PacketLarge(uint subOpCode, byte[] data, int dataLength)
+        {
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Puerto no disponible para enviar comando Op 0x66 (paquete grande)", LogLevel.Error);
+                return null;
+            }
+
+            try
+            {
+                // PASO 1: Enviar el header del paquete (primeros 1024 bytes con OpCode, SubOpCode y primeros datos)
+                byte[] headerBuffer = new byte[1024];
+                Array.Clear(headerBuffer, 0, 1024);
+
+                // Offset 0-3: OpCode 0x66 (4 bytes Little Endian)
+                byte[] opCodeBytes = BitConverter.GetBytes(0x66u);
+                Array.Copy(opCodeBytes, 0, headerBuffer, 0, 4);
+
+                // Offset 4-7: Sub-OpCode (4 bytes Little Endian)
+                byte[] subOpBytes = BitConverter.GetBytes(subOpCode);
+                Array.Copy(subOpBytes, 0, headerBuffer, 4, 4);
+
+                // Offset 8+: Primeros datos (hasta 1016 bytes en el buffer de 1024)
+                int headerDataLength = Math.Min(dataLength, 1024 - 8);
+                if (headerDataLength > 0)
+                {
+                    Array.Copy(data, 0, headerBuffer, 8, headerDataLength);
+                }
+
+                // Limpieza de buffers antes de enviar
+                _port.DiscardInBuffer();
+                _port.DiscardOutBuffer();
+
+                // Enviar header de 1024 bytes
+                _port.Write(headerBuffer, 0, 1024);
+
+                // PASO 2: Si hay más datos después de los primeros 1016 bytes, enviarlos directamente
+                if (dataLength > (1024 - 8))
+                {
+                    int remainingData = dataLength - (1024 - 8);
+                    int remainingOffset = 1024 - 8;
+                    _port.Write(data, remainingOffset, remainingData);
+                }
+
+                // PASO 3: Leer respuesta (8 bytes)
+                byte[] resp = new byte[8];
+                int originalTimeout = _port.ReadTimeout;
+                _port.ReadTimeout = 5000;
+
+                try
+                {
+                    int read = await Task.Run(() =>
+                    {
+                        try
+                        {
+                            return _port.Read(resp, 0, 8);
+                        }
+                        catch
+                        {
+                            return 0;
+                        }
+                    });
+
+                    if (read >= 8)
+                    {
+                        return resp;
+                    }
+
+                    return null;
+                }
+                finally
+                {
+                    _port.ReadTimeout = originalTimeout;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error enviando comando Op 0x66 Sub 0x{subOpCode:X2} (paquete grande): {ex.Message}", LogLevel.Error);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Paso A: Pre-check (Op 0x66, Sub 0x00)
+        /// Verifica si el dispositivo está listo para recibir datos
+        /// Basado en FUN_00433880 - local_5c = FUN_004324d0(0x66,0,0,0,0,0,1)
+        /// NOTA: El sub-opcode es 0x00, NO 0x05
+        /// </summary>
+        /// <param name="maxRetries">Número máximo de reintentos si el dispositivo está ocupado</param>
+        /// <returns>True si el dispositivo está listo (respuesta 00-00-00-00), False si falla</returns>
+        private async Task<bool> SendOp66PreCheck(int maxRetries = 10)
+        {
+            const uint BUSY_RESPONSE = 0x80000080; // -0x80000000 en formato little endian
+            const uint READY_RESPONSE = 0x00000000; // 00-00-00-00
+
+            for (int retry = 0; retry < maxRetries; retry++)
+            {
+                // FUN_004324d0(0x66,0,0,0,0,0,1) - Sub-opcode es 0x00
+                byte[] response = await SendOp66Packet(0x00);
+                if (response == null)
+                {
+                    Log($"Pre-check falló: No se recibió respuesta (intento {retry + 1}/{maxRetries})", LogLevel.Warning);
+                    if (retry < maxRetries - 1)
+                    {
+                        await Task.Delay(10); // Esperar 10ms antes de reintentar
+                        continue;
+                    }
+                    return false;
+                }
+
+                uint responseValue = BitConverter.ToUInt32(response, 0);
+
+                if (responseValue == READY_RESPONSE)
+                {
+                    // Dispositivo listo
+                    return true;
+                }
+                else if (responseValue == BUSY_RESPONSE || (response[0] == 0x80 && response[3] == 0x80))
+                {
+                    // Dispositivo ocupado (-0x80000000)
+                    Log($"Dispositivo ocupado, esperando 10ms... (intento {retry + 1}/{maxRetries})", LogLevel.Debug);
+                    await Task.Delay(10);
+                    continue;
+                }
+                else
+                {
+                    // Respuesta inesperada, pero continuamos
+                    Log($"Pre-check: Respuesta inesperada 0x{responseValue:X8}, continuando...", LogLevel.Debug);
+                    return true;
+                }
+            }
+
+            Log("Pre-check falló: Dispositivo ocupado después de múltiples intentos", LogLevel.Error);
+            return false;
+        }
+
+        /// <summary>
+        /// Paso B: Data Transfer (Op 0x66, Sub 0x02 + datos)
+        /// Envía un fragmento de datos al dispositivo
+        /// Basado en FUN_00433880:
+        /// 1. local_38 = ((local_58 - 1 >> 0x11) + 1) * 0x20000 - Calcula tamaño del chunk (131072 bytes)
+        /// 2. FUN_004324d0(0x66,2,&local_38,1,0,0,1) - Envía 1 byte del tamaño del chunk
+        /// 3. FUN_004327a0(param_2,local_58,uVar6) - Envía los datos reales
+        /// 4. ReleaseBuffer(0xffffffff) - Libera el buffer
+        /// </summary>
+        /// <param name="data">Datos del fragmento a enviar</param>
+        /// <param name="dataLength">Longitud de los datos</param>
+        /// <param name="skipChunkSizeCommand">Si es true, no envía el comando 0x66, 0x02 (ya se envió antes del bucle)</param>
+        /// <returns>True si el envío fue exitoso, False si falla</returns>
+        private async Task<bool> SendOp66Data(byte[] data, int dataLength, bool skipChunkSizeCommand = false)
+        {
+            if (data == null || dataLength <= 0)
+            {
+                Log("Error: Datos inválidos para envío Op 0x66 Sub 0x02", LogLevel.Error);
+                return false;
+            }
+
+            if (_port == null || !_port.IsOpen)
+            {
+                Log("Error: Puerto no disponible para envío de datos", LogLevel.Error);
+                return false;
+            }
+
+            try
+            {
+                // Según FUN_00433880: Después del Buffer Reserve (0x66, 0x02), los datos se envían DIRECTAMENTE
+                // FUN_004327a0(param_2,local_58,uVar6) - envía los datos reales directamente al puerto
+                // NO se envía otro comando 0x66, 0x02 aquí si skipChunkSizeCommand es true
+                // (el Buffer Reserve ya se envió antes del bucle)
+                
+                if (!skipChunkSizeCommand)
+                {
+                    // PASO 1: Calcular el tamaño del chunk según la fórmula exacta de FUN_00433880
+                    // local_38 = ((local_58 - 1 >> 0x11) + 1) * 0x20000
+                    // Esto asegura que el chunk sea siempre múltiplo de 131072 bytes (128KB)
+                    uint alignedSize = (uint)(((dataLength - 1) >> 17) + 1) * 0x20000;
+                    
+                    // PASO 2: Enviar el tamaño alineado completo (4 bytes) con Op 0x66 Sub 0x02
+                    // CORRECCIÓN: Enviar los 4 bytes completos del tamaño alineado, no solo 1 byte
+                    // Según FUN_00433880: local_38 se envía completo (4 bytes) para el alineamiento correcto
+                    byte[] sizeBytes = BitConverter.GetBytes(alignedSize);
+                    byte[] sizeResponse = await SendOp66Packet(0x02, sizeBytes, 4);
+                    
+                    if (sizeResponse == null)
+                    {
+                        Log("Error: No se recibió respuesta al enviar tamaño del fragmento", LogLevel.Error);
+                        return false;
+                    }
+                    
+                    // Verificar que no sea respuesta de error
+                    uint responseValue = BitConverter.ToUInt32(sizeResponse, 0);
+                    if (responseValue == 0x80000080 || (sizeResponse[0] == 0x80 && sizeResponse[3] == 0x80))
+                    {
+                        Log("Error: Dispositivo respondió con error al recibir tamaño", LogLevel.Error);
+                        return false;
+                    }
+                }
+
+                // PASO 3: Enviar los datos reales directamente al puerto
+                // FUN_004327a0(param_2,local_58,uVar6) - envía los datos reales (local_58 bytes)
+                // IMPORTANTE: Enviar exactamente dataLength bytes, no chunkSize
+                // El chunkSize es solo para la reserva de espacio, los datos reales son dataLength
+                _port.DiscardOutBuffer();
+                
+                // Enviar los datos del fragmento (exactamente dataLength bytes)
+                _port.Write(data, 0, dataLength);
+                
+                // Pequeño delay para que el dispositivo procese
+                await Task.Delay(1);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"Error al enviar datos Op 0x66 Sub 0x02: {ex.Message}", LogLevel.Error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Paso C: Post-check / Write Commit (Op 0x66, Sub 0x03)
+        /// Confirma que el bloque se escribió correctamente en la memoria flash
+        /// Basado en FUN_00433880 - local_5c = FUN_004324d0(0x66,3,&local_38,8,0,0,1)
+        /// NOTA: El sub-opcode es 0x03, NO 0x07
+        /// 
+        /// Estructura completa del paquete de commit (32 bytes - 8 campos de 4 bytes):
+        /// - local_38 (offset 0-3) = 0 (inicializado)
+        /// - uStack_34 (offset 4-7) = local_58 (tamaño del fragmento enviado)
+        /// - uStack_30 (offset 8-11) = *local_40 (primer campo de la estructura de partición/archivo)
+        /// - uStack_2c (offset 12-15) = local_40[1] (segundo campo)
+        /// - uStack_28 (offset 16-19) = local_40[2] (tercer campo)
+        /// - uStack_24 (offset 20-23) = local_88 (FLAG CRÍTICO: 1 si es último chunk, 0 si no)
+        /// - uStack_20 (offset 24-27) = 0
+        /// - uStack_1c (offset 28-31) = 0
+        /// 
+        /// El flag uStack_24 es CRÍTICO: si no se envía 1 en el último chunk, el teléfono
+        /// piensa que todavía hay más datos y no escribe nada a la memoria física.
+        /// </summary>
+        /// <param name="chunkData">Datos del chunk a enviar (se incluyen después del header de 32 bytes)</param>
+        /// <param name="bytesSent">Bytes enviados en este fragmento</param>
+        /// <param name="totalBytesSent">Total de bytes enviados hasta ahora</param>
+        /// <param name="totalFileSize">Tamaño total del archivo</param>
+        /// <param name="isLastChunk">True si este es el último fragmento</param>
+        /// <returns>True si el commit fue exitoso, False si falla</returns>
+        private async Task<bool> SendOp66Commit(byte[] chunkData, uint bytesSent, ulong totalBytesSent, ulong totalFileSize, bool isLastChunk)
+        {
+            // Según FUN_00433880 y análisis detallado:
+            // La estructura completa del paquete de commit tiene 32 bytes (8 campos de 4 bytes cada uno)
+            // según las variables uStack en la pila:
+            // - local_38 (4 bytes) = 0 (inicializado)
+            // - uStack_34 (4 bytes) = local_58 (tamaño del fragmento enviado)
+            // - uStack_30 (4 bytes) = *local_40 (primer campo de la estructura de partición/archivo)
+            // - uStack_2c (4 bytes) = local_40[1] (segundo campo)
+            // - uStack_28 (4 bytes) = local_40[2] (tercer campo)
+            // - uStack_24 (4 bytes) = local_88 (FLAG CRÍTICO: 1 si es último chunk, 0 si no)
+            // - uStack_20 (4 bytes) = 0
+            // - uStack_1c (4 bytes) = 0
+            // 
+            // El flag uStack_24 es CRÍTICO: si no se envía 1 en el último chunk, el teléfono
+            // piensa que todavía hay más datos y no escribe nada a la memoria física.
+            
+            // Estructura del paquete: Header de 32 bytes (los datos se envían después)
+            // El header se envía como paquete 0x66, 0x03, y luego los datos directamente al puerto
+            byte[] commitPacket = new byte[32];
+            Array.Clear(commitPacket, 0, 32); // Inicializar header a 0
+            
+            // HEADER DE 32 BYTES:
+            // local_38 (offset 0-3) = 0 (inicializado a 0)
+            // Ya está en 0 por Array.Clear
+            
+            // uStack_34 (offset 4-7) = local_58 (tamaño del fragmento enviado)
+            byte[] bytesSentBytes = BitConverter.GetBytes(bytesSent);
+            Array.Copy(bytesSentBytes, 0, commitPacket, 4, 4);
+            
+            // uStack_30 (offset 8-11) = *local_40 (primer campo de la estructura de partición/archivo)
+            // Por ahora usamos 0, pero podría contener información del archivo
+            // Ya está en 0
+            
+            // uStack_2c (offset 12-15) = local_40[1] (segundo campo)
+            // Ya está en 0
+            
+            // uStack_28 (offset 16-19) = local_40[2] (tercer campo)
+            // Ya está en 0
+            
+            // uStack_24 (offset 20-23) = local_88 (FLAG CRÍTICO: 1 si es último chunk, 0 si no)
+            // ESTE ES EL CAMPO MÁS IMPORTANTE: le dice al teléfono que termine de escribir
+            // Si este flag no es 1 en el último chunk, el teléfono se queda esperando más datos
+            // y el timeout expira causando "NAND Write Failed"
+            uint lastChunkFlag = isLastChunk ? 1u : 0u;
+            byte[] lastChunkBytes = BitConverter.GetBytes(lastChunkFlag);
+            Array.Copy(lastChunkBytes, 0, commitPacket, 20, 4);
+            
+            // Log crítico para depuración
+            if (isLastChunk)
+            {
+                Log($"<ID:0/001> CRÍTICO: Enviando flag de finalización (uStack_24 = 1) en el último chunk. Bytes enviados: {bytesSent}, Total: {totalFileSize}", LogLevel.Info);
+            }
+            
+            // uStack_20 (offset 24-27) = 0
+            // Ya está en 0
+            
+            // uStack_1c (offset 28-31) = 0
+            // Ya está en 0
+
+            // DATOS DEL CHUNK:
+            // Según el análisis definitivo: El paquete 0x66, 0x03 debe incluir header de 32 bytes + datos del chunk
+            // Todo en un solo envío para que el teléfono procese correctamente
+            if (chunkData == null || chunkData.Length < bytesSent)
+            {
+                Log("Error: Datos del chunk inválidos para el commit", LogLevel.Error);
+                return false;
+            }
+
+            // CORRECCIÓN CRÍTICA: Construir el paquete completo para envío único
+            // Estructura según FUN_00433880: Header 0x66/0x03 (8 bytes) + Header de 32 bytes + Datos del chunk
+            // Todo debe enviarse en un solo bloque continuo para evitar fragmentación que causa error 0xFFFFFFFF
+            int headerAndDataSize = 32 + (int)bytesSent; // Header de 32 bytes + datos del chunk
+            int totalDataSize = 8 + headerAndDataSize; // 8 bytes (0x66 + 0x03) + 32 bytes header + datos
+            
+            // Construir el paquete completo: header de comando + header de 32 bytes + datos
+            byte[] fullPacket = new byte[totalDataSize];
+            
+            // PASO 1: Construir header del comando 0x66, 0x03 (primeros 8 bytes)
+            byte[] opCodeBytes = BitConverter.GetBytes(0x66u);
+            Array.Copy(opCodeBytes, 0, fullPacket, 0, 4);
+            byte[] subOpBytes = BitConverter.GetBytes(0x03u);
+            Array.Copy(subOpBytes, 0, fullPacket, 4, 4);
+            
+            // PASO 2: Copiar header de 32 bytes después del comando (offset 8+)
+            Array.Copy(commitPacket, 0, fullPacket, 8, 32);
+            
+            // PASO 3: Copiar datos del chunk después del header de 32 bytes (offset 40+)
+            Array.Copy(chunkData, 0, fullPacket, 40, (int)bytesSent);
+
+            // PASO 4: Enviar el paquete completo en un solo bloque continuo
+            // El protocolo LOKE requiere el primer bloque de 1024 bytes, pero si el paquete es menor,
+            // lo enviamos completo. Si es mayor, enviamos el bloque de 1024 y luego el resto.
+            _port.DiscardInBuffer();
+            _port.DiscardOutBuffer();
+            
+            if (totalDataSize <= 1024)
+            {
+                // Si el paquete cabe en 1024 bytes, enviarlo completo en un buffer de 1024
+                byte[] buffer1024 = new byte[1024];
+                Array.Clear(buffer1024, 0, 1024);
+                Array.Copy(fullPacket, 0, buffer1024, 0, totalDataSize);
+                _port.Write(buffer1024, 0, 1024);
+            }
+            else
+            {
+                // Si el paquete es mayor, enviar primero 1024 bytes y luego el resto en un solo envío continuo
+                byte[] buffer1024 = new byte[1024];
+                Array.Copy(fullPacket, 0, buffer1024, 0, 1024);
+                _port.Write(buffer1024, 0, 1024);
+                
+                // Enviar el resto de datos inmediatamente después (sin fragmentación)
+                int remainingSize = totalDataSize - 1024;
+                _port.Write(fullPacket, 1024, remainingSize);
+            }
+            
+            // Leer respuesta (8 bytes)
+            byte[] resp = new byte[8];
+            int originalTimeout = _port.ReadTimeout;
+            _port.ReadTimeout = 5000;
+            
+            byte[] response = null;
+            try
+            {
+                int read = await Task.Run(() =>
+                {
+                    try
+                    {
+                        return _port.Read(resp, 0, 8);
+                    }
+                    catch
+                    {
+                        return 0;
+                    }
+                });
+                
+                if (read == 8)
+                {
+                    response = resp;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error al leer respuesta del commit: {ex.Message}", LogLevel.Error);
+            }
+            finally
+            {
+                _port.ReadTimeout = originalTimeout;
+            }
+            
+            if (response == null)
+            {
+                Log("Error: No se recibió respuesta al commit (Op 0x66 Sub 0x03). Posible timeout o puerto cerrado.", LogLevel.Error);
+                // Resetear buffer del puerto si hay problema de comunicación
+                try
+                {
+                    if (_port != null && _port.IsOpen)
+                    {
+                        _port.DiscardInBuffer();
+                        _port.DiscardOutBuffer();
+                    }
+                }
+                catch { }
+                return false;
+            }
+            
+            // Verificar respuesta: 0x66 es una respuesta válida de "Continuar" durante el envío de fragmentos
+            // También aceptamos 0x00 (éxito) y rechazamos 0x80000080 (error)
+            uint responseValue = BitConverter.ToUInt32(response, 0);
+            bool isValidResponse = false;
+            
+            // Respuestas válidas según protocolo LOKE:
+            // - 0x00000000 (0x00): Éxito/Listo
+            // - 0x00000066 (0x66): Continuar (válido durante envío de fragmentos) - ¡CRÍTICO!
+            // - 0xFFFFFFFF: NO es una respuesta válida, es un error de timeout/puerto cerrado
+            // - 0x80000080: Error explícito del dispositivo
+            if (responseValue == 0x00000000)
+            {
+                isValidResponse = true;
+            }
+            else if (responseValue == 0x00000066 || response[0] == 0x66)
+            {
+                // 0x66 es una respuesta válida de "Continuar" durante el envío de fragmentos
+                isValidResponse = true;
+                Log("Dispositivo respondió con 0x66 (Continuar) - Respuesta válida", LogLevel.Debug);
+            }
+            else if (responseValue == 0xFFFFFFFF)
+            {
+                // 0xFFFFFFFF indica timeout o puerto cerrado - NO es una respuesta válida del dispositivo
+                Log("Error: Respuesta 0xFFFFFFFF detectada. Esto indica timeout o puerto cerrado, no una respuesta del dispositivo.", LogLevel.Error);
+                // Resetear buffer del puerto
+                try
+                {
+                    if (_port != null && _port.IsOpen)
+                    {
+                        _port.DiscardInBuffer();
+                        _port.DiscardOutBuffer();
+                    }
+                }
+                catch { }
+                return false;
+            }
+            else if (responseValue == 0x80000080 || (response[0] == 0x80 && response[3] == 0x80))
+            {
+                Log("Error: Dispositivo respondió con error al commit (0x80000080)", LogLevel.Error);
+                return false;
+            }
+            else
+            {
+                // Otra respuesta inesperada, pero no es error explícito - aceptarla
+                isValidResponse = true;
+                Log($"Respuesta inesperada pero no error: 0x{responseValue:X8} - Continuando...", LogLevel.Debug);
+            }
+            
+            if (!isValidResponse)
+            {
+                Log($"Error: Respuesta inválida al commit: 0x{responseValue:X8}", LogLevel.Error);
+                return false;
+            }
+
+            return true;
         }
 
         /// <summary>
