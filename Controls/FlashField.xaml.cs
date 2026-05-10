@@ -43,8 +43,11 @@ namespace Odin_Flash.Controls
             view.IsLiveSorting = true;
             CmbBxListFile.ItemsSource = view;
             BtnClear.Visibility = Visibility.Collapsed;
-            BtnChooseFile.Content = $"Load {PackageSlot}";
-            txtSelectTeam.Text = $"{PackageSlot} package";
+
+            // Mostrar solo el icono de carpeta (ya definido en XAML) y el texto corto del slot (ej. "BL")
+            BtnChooseFile.Content = PackageSlot;
+            // Placeholder reducido a solo el slot (ej. "BL")
+            txtSelectTeam.Text = PackageSlot;
             view.Refresh();
         }
 
@@ -151,7 +154,8 @@ namespace Odin_Flash.Controls
         {
             FlashFile.Clear();
             view.Refresh();
-            txtSelectTeam.Text = $"Select {PackageSlot} package";
+            // Volver al texto corto del slot al limpiar
+            txtSelectTeam.Text = PackageSlot;
             BtnClear.Visibility = Visibility.Collapsed;
 
         }

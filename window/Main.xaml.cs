@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Navigation;
 using System.Windows.Threading;
 using Wpf.Ui.Appearance;
+using Wpf.Ui.Controls;
 using FluentWindow = Wpf.Ui.Controls.FluentWindow;
 using MsgType = OdinProtocolAtack.util.utils.MsgType;
 
@@ -29,7 +30,9 @@ namespace Odin_Flash.window
         public Main()
         {
             InitializeComponent();
+
             ApplicationThemeManager.Apply(ApplicationTheme.Dark);
+            WindowBackgroundManager.UpdateBackground(this, ApplicationTheme.Dark, WindowBackdropType.Acrylic);
 
             Flash = new Flash();
             Flash.Log += Flash_Log;
@@ -51,6 +54,8 @@ namespace Odin_Flash.window
             {
                 IsRunningOperation = IsRunning;
                 Flash.ControlsManage(IsRunning);
+                BtnFlash.IsEnabled = !IsRunning;
+                BtnReadPit.IsEnabled = !IsRunning;
                 BtnStop.IsEnabled = IsRunning;
             });
         }
@@ -93,40 +98,36 @@ namespace Odin_Flash.window
 
         private void Flash_Log(string Text, MsgType Color, bool IsError = false)
         {
+            if (string.IsNullOrEmpty(Text))
+                return;
+
             Application.Current.Dispatcher.Invoke(() =>
             {
-                if (string.IsNullOrEmpty(Text))
-                {
-                    return;
-                }
                 UpdateDeviceStatusFromLog(Text, IsError);
-                if (Color == MsgType.Message)
-                    Text = "\n" + Text;
-                TextRange rangeOfText1 = new TextRange(RichLog.Document.ContentEnd, RichLog.Document.ContentEnd);
-                rangeOfText1.ApplyPropertyValue(TextBlock.TextAlignmentProperty, TextAlignment.Left);
-                RichLog.FlowDirection = FlowDirection.LeftToRight;
-                rangeOfText1.Text = Text;
+
+                Paragraph paragraph = new Paragraph { Margin = new Thickness(0) };
+                Run run = new Run(Text)
+                {
+                    FontSize = 10.5
+                };
+
                 if (IsError)
                 {
-                    rangeOfText1.ApplyPropertyValue(TextElement.ForegroundProperty, Brushes.YellowGreen);
+                    run.Foreground = Brushes.YellowGreen;
                 }
                 else if (Color == MsgType.Result)
                 {
-                    rangeOfText1.ApplyPropertyValue(TextElement.ForegroundProperty, Brushes.Cyan);
+                    run.Foreground = Brushes.Cyan;
+                    run.FontWeight = FontWeights.Bold;
                 }
                 else
                 {
-                    rangeOfText1.ApplyPropertyValue(TextElement.ForegroundProperty, (SolidColorBrush)new BrushConverter().ConvertFrom("#59b369"));
+                    run.Foreground = (SolidColorBrush)new BrushConverter().ConvertFrom("#A0A0A0");
                 }
-                switch (Color)
-                {
-                    case MsgType.Result:
-                        rangeOfText1.ApplyPropertyValue(TextElement.FontWeightProperty, FontWeights.Bold);
-                        break;
-                    case MsgType.Message:
-                        rangeOfText1.ApplyPropertyValue(TextElement.FontWeightProperty, FontWeights.Normal);
-                        break;
-                }
+
+                paragraph.Inlines.Add(run);
+                RichLog.Document.Blocks.Add(paragraph);
+
                 RichLog.ScrollToEnd();
             });
         }
@@ -204,6 +205,16 @@ namespace Odin_Flash.window
             RichLog.Document.Blocks.Clear();
         }
 
+        private void BtnFlash_Click(object sender, RoutedEventArgs e)
+        {
+            Flash.BtnFlash_Click(sender, e);
+        }
+
+        private void BtnReadPit_Click(object sender, RoutedEventArgs e)
+        {
+            Flash.BtnReadPit_Click(sender, e);
+        }
+
         private void BtnStop_Click(object sender, RoutedEventArgs e)
         {
             Flash.Odin.StopOperations();
@@ -220,9 +231,9 @@ namespace Odin_Flash.window
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            Flash_Log("════════════════════════════════════════════", MsgType.Message);
-            Flash_Log("Odin Flash v" + System.Reflection.Assembly.GetEntryAssembly().GetName().Version.ToString(), MsgType.Message);
-            Flash_Log("════════════════════════════════════════════", MsgType.Message);
+            RichLog.Document.Blocks.Clear();
+            Flash_Log("Odin Flash 1.0.1", MsgType.Message);
+            Flash_Log("------------------------------------", MsgType.Message);
         }
 
     }

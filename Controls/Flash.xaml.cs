@@ -28,9 +28,13 @@ namespace Odin_Flash.Controls
             InitializeComponent();
 
             Features.Children.Add(BLPackage);
+            Grid.SetRow(BLPackage, 0);
             Features.Children.Add(APPackage);
+            Grid.SetRow(APPackage, 1);
             Features.Children.Add(CPPackage);
+            Grid.SetRow(CPPackage, 2);
             Features.Children.Add(CSCPackage);
+            Grid.SetRow(CSCPackage, 3);
 
             RepartitionCheckBx.IsEnabled = false;
             BtnClearPit.Visibility = Visibility.Collapsed;
@@ -50,8 +54,6 @@ namespace Odin_Flash.Controls
             TxtBxPit.IsEnabled = !IsEnable;
             BtnClearPit.IsEnabled = !IsEnable;
             BtnChoosePit.IsEnabled = !IsEnable;
-            BtnFlash.IsEnabled = !IsEnable;
-            BtnReadPit.IsEnabled = !IsEnable;
         }
 
         private void Odin_Log(string Text, MsgType Color, bool IsError = false)
@@ -238,7 +240,7 @@ namespace Odin_Flash.Controls
             Log?.Invoke("\n Good Job Boy 👍", MsgType.Result);
         }
 
-        private async void BtnFlash_Click(object sender, RoutedEventArgs e)
+        public async void BtnFlash_Click(object sender, RoutedEventArgs e)
         {
             try
             {
@@ -295,7 +297,7 @@ namespace Odin_Flash.Controls
             }
         }
 
-        private async void BtnReadPit_Click(object sender, RoutedEventArgs e)
+        public async void BtnReadPit_Click(object sender, RoutedEventArgs e)
         {
             try
             {

@@ -5,12 +5,14 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              xmlns:local="clr-namespace:Odin_Flash.Controls"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-             mc:Ignorable="d" >
+             mc:Ignorable="d"
+             VerticalAlignment="Stretch">
     <ui:Card Background="{DynamicResource AresCardBrush}"
              BorderBrush="{DynamicResource AresSoftBorderBrush}"
              BorderThickness="1"
-             Padding="8"
-             Margin="0,0,0,6">
+             Padding="6,4"
+             Margin="0,0,0,2"
+             VerticalAlignment="Stretch">
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -21,8 +23,10 @@
                 <ComboBox SelectionChanged="CmbBxListFile_SelectionChanged"
                           Name="CmbBxListFile"
                           SelectedValue="{Binding FilePath}"
-                          Margin="0,0,8,0"
-                          MinHeight="36">
+                          Margin="0,0,6,0"
+                          MinHeight="28"
+                          VerticalContentAlignment="Center"
+                          Padding="6,2">
                     <ComboBox.ItemsPanel>
                         <ItemsPanelTemplate>
                             <VirtualizingStackPanel IsVirtualizing="True" VirtualizationMode="Recycling"/>
@@ -54,17 +58,23 @@
                        Margin="0,0,6,0"
                        Grid.Column="1"
                        Content="Clear"
-                       MinWidth="56">
+                       Width="72"
+                       MinWidth="72"
+                       MinHeight="28"
+                       Padding="8,4">
                 <ui:Button.Icon>
                     <ui:SymbolIcon Symbol="Delete16"/>
                 </ui:Button.Icon>
             </ui:Button>
             <ui:Button x:Name="BtnChooseFile"
-                       Appearance="Primary"
+                       Appearance="Secondary"
                        Click="BtnChooseFile_Click"
                        Grid.Column="2"
                        Content="Browse"
-                       MinWidth="88">
+                       Width="120"
+                       MinWidth="120"
+                       MinHeight="28"
+                       Padding="10,4">
                 <ui:Button.Icon>
                     <ui:SymbolIcon Symbol="FolderOpen16"/>
                 </ui:Button.Icon>

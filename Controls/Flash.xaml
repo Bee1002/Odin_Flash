@@ -11,40 +11,49 @@
              d:DesignWidth="500">
     <!-- Misma estructura funcional que Freya.Controls.Flash; visual migrado gradualmente a WPF-UI. -->
     <Grid Background="Transparent">
-        <Grid Margin="0">
+        <Grid Margin="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="auto"/>
-                <RowDefinition Height="auto"/>
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid Grid.Row="0" Margin="0,0,0,4">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
                     <ui:TextBlock Text="Firmware"
-                                  FontTypography="Title"
+                                  FontTypography="Subtitle"
                                   Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
                 </StackPanel>
             </Grid>
 
-            <StackPanel x:Name="Features" Grid.Row="1" Orientation="Vertical" Margin="0,0,0,2">
-            </StackPanel>
+            <!-- Cuatro filas compactas: cada fila ajusta su tamaño al contenido -->
+            <Grid x:Name="Features"
+                  Grid.Row="1"
+                  Margin="0,0,0,6"
+                  VerticalAlignment="Top">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+            </Grid>
 
             <Expander Grid.Row="2"
                       Header="Opciones avanzadas"
                       Foreground="{DynamicResource TabColorForegroundBrush}"
-                      Margin="0,0,0,8"
+                      Margin="0,0,0,6"
                       IsExpanded="False">
                 <StackPanel Margin="0,6,0,0">
                     <ui:Card Background="{DynamicResource AresCardBrush}"
                              BorderBrush="{DynamicResource AresSoftBorderBrush}"
                              BorderThickness="1"
-                             Padding="10"
-                             Margin="0,0,0,6">
+                             Padding="8"
+                             Margin="0,0,0,4">
                         <Grid x:Name="Pit">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="auto"/>
@@ -114,49 +123,6 @@
                     </ui:Card>
                 </StackPanel>
             </Expander>
-
-            <Grid Grid.Row="3">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="auto"/>
-                </Grid.ColumnDefinitions>
-                <ui:Button Margin="0,0,8,0"
-                           Grid.Column="0"
-                           Name="BtnFlash"
-                           Appearance="Primary"
-                           Click="BtnFlash_Click">
-                    <ui:Button.Icon>
-                        <ui:SymbolIcon Symbol="ArrowForwardDownLightning20"/>
-                    </ui:Button.Icon>
-                    <StackPanel Orientation="Horizontal"
-                                VerticalAlignment="Center"
-                                HorizontalAlignment="Center">
-                        <ui:TextBlock Name="LblFastFlash"
-                                      Text="Flash"
-                                      VerticalAlignment="Center"/>
-                    </StackPanel>
-                </ui:Button>
-                <ui:Button Margin="5"
-                           Grid.Column="1"
-                           Name="BtnReadPit"
-                           Appearance="Secondary"
-                           Click="BtnReadPit_Click">
-                    <ui:Button.Icon>
-                        <ui:SymbolIcon Symbol="DocumentSearch16"/>
-                    </ui:Button.Icon>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <ui:TextBlock Name="LblReadPit"
-                                      Text="Read PIT"
-                                      Margin="5"
-                                      Grid.Column="0"
-                                      VerticalAlignment="Center"/>
-                    </Grid>
-                </ui:Button>
-            </Grid>
         </Grid>
     </Grid>
 </UserControl>
