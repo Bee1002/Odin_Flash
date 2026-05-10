@@ -1,69 +1,83 @@
 using System;
-using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Odin_Flash.Util
 {
+    public delegate void IsRunningProcessDelegate(bool IsRunning, string process);
+
+    /// <summary>Equivalente funcional a Freya.Util.Util; métodos extra para formato de log estilo Odin.</summary>
     public class Util
     {
-        public delegate void PitDetectDelegate(string pitname, string path);
-        public delegate void IsRunningProcessDelegate(bool IsRunning, string process);
-        public static string MyPath
-        {
-            get
-            {
-                return Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-            }
-        }
+        /// <summary>Cultura para el log estilo Odin (ej. 9,258 GB).</summary>
+        public static readonly CultureInfo OdinLogCulture = CultureInfo.GetCultureInfo("es-ES");
+
+        public static string MyPath =>
+            Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+
         public static void CreatFolder(string name)
         {
-            try { if (!Directory.Exists(name)) {Directory.CreateDirectory(name);} }catch{}
+            try
+            {
+                if (!Directory.Exists(name))
+                    Directory.CreateDirectory(name);
+            }
+            catch { }
         }
+
         public static string GetBytesReadable(long i)
         {
-            long absolute_i = (i < 0 ? -i : i);
+            long absolute_i = i < 0 ? -i : i;
             string suffix;
             double readable;
-            if (absolute_i >= 0x1000000000000000) // Exabyte
+            if (absolute_i >= 0x1000000000000000)
             {
                 suffix = "EB";
-                readable = (i >> 50);
+                readable = i >> 50;
             }
-            else if (absolute_i >= 0x4000000000000) // Petabyte
+            else if (absolute_i >= 0x4000000000000)
             {
                 suffix = "PB";
-                readable = (i >> 40);
+                readable = i >> 40;
             }
-            else if (absolute_i >= 0x10000000000) // Terabyte
+            else if (absolute_i >= 0x10000000000)
             {
                 suffix = "TB";
-                readable = (i >> 30);
+                readable = i >> 30;
             }
-            else if (absolute_i >= 0x40000000) // Gigabyte
+            else if (absolute_i >= 0x40000000)
             {
                 suffix = "GB";
-                readable = (i >> 20);
+                readable = i >> 20;
             }
-            else if (absolute_i >= 0x100000) // Megabyte
+            else if (absolute_i >= 0x100000)
             {
                 suffix = "MB";
-                readable = (i >> 10);
+                readable = i >> 10;
             }
-            else if (absolute_i >= 0x400) // Kilobyte
+            else if (absolute_i >= 0x400)
             {
                 suffix = "KB";
                 readable = i;
             }
             else
-            {
-                return i.ToString("0 B"); // Byte
-            }
-            readable = (readable / 1024);
-            // Return formatted number with suffix
+                return i.ToString("0 B");
+
+            readable /= 1024;
             return readable.ToString("0.### ") + suffix;
+        }
+
+        /// <summary>Tamaño total del paquete en GB con tres decimales (estilo ventana Odin).</summary>
+        public static string FormatCalculatedSizeGbOdin(long bytes)
+        {
+            double gb = bytes / (1024.0 * 1024.0 * 1024.0);
+            return gb.ToString("F3", OdinLogCulture) + " GB";
+        }
+
+        /// <summary>Tamaño para la línea [x,xx GB] en el log de flash.</summary>
+        public static string FormatFlashLineBracketGb(double sizeGb)
+        {
+            return sizeGb.ToString("F2", OdinLogCulture) + " GB";
         }
     }
 }

@@ -1,22 +1,13 @@
 using Odin_Flash.Util;
 using Microsoft.Win32;
-using SharpOdinClient;
-using SharpOdinClient.util;
+using OdinProtocolAtack;
+using OdinProtocolAtack.util;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
-using static Odin_Flash.Util.Util;
 
 namespace Odin_Flash.Controls
 {
@@ -41,17 +32,34 @@ namespace Odin_Flash.Controls
 
         public ListCollectionView view;
         public string Package;
+        private readonly string PackageSlot;
         public FlashField(string package)
         {
             InitializeComponent();
             this.Package = package;
+            PackageSlot = GetPackageSlot(package);
             view = new ListCollectionView(FlashFile);
             view.IsLiveFiltering = true;
             view.IsLiveSorting = true;
             CmbBxListFile.ItemsSource = view;
             BtnClear.Visibility = Visibility.Collapsed;
-            txtSelectTeam.Text = $"{Package} ";
+            BtnChooseFile.Content = $"Load {PackageSlot}";
+            txtSelectTeam.Text = $"{PackageSlot} package";
             view.Refresh();
+        }
+
+        private static string GetPackageSlot(string package)
+        {
+            if (package.StartsWith("BL", StringComparison.OrdinalIgnoreCase))
+                return "BL";
+            if (package.StartsWith("AP", StringComparison.OrdinalIgnoreCase))
+                return "AP";
+            if (package.StartsWith("CP", StringComparison.OrdinalIgnoreCase))
+                return "CP";
+            if (package.StartsWith("CSC", StringComparison.OrdinalIgnoreCase))
+                return "CSC";
+
+            return package;
         }
 
         public bool Exist(cListFileData File)
@@ -65,7 +73,26 @@ namespace Odin_Flash.Controls
             }
             return false;
         }
-        public event PitDetectDelegate PitDetect;
+
+        private static bool IsFlashableTarEntry(cListFileData file)
+        {
+            if (file == null || string.IsNullOrWhiteSpace(file.Filename))
+                return false;
+            if (string.Equals(file.Filetype, "Directory", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (file.Filename.EndsWith("/", StringComparison.Ordinal))
+                return false;
+            if (file.Filename.StartsWith("meta-data/", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var extension = System.IO.Path.GetExtension(file.Filename);
+            return extension.Equals(".lz4", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".img", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".bin", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".mbn", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".elf", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void BtnChooseFile_Click(object sender, RoutedEventArgs e)
         {
             var dlg = new OpenFileDialog
@@ -84,6 +111,9 @@ namespace Odin_Flash.Controls
                 {
                     foreach (var Tiem in item)
                     {
+                        if (!IsFlashableTarEntry(Tiem))
+                            continue;
+
                         if (!Exist(Tiem))
                         {
                             var Extension = System.IO.Path.GetExtension(Tiem.Filename);
@@ -94,12 +124,7 @@ namespace Odin_Flash.Controls
                                 FilePath = filename
                             };
 
-                            if (Extension == ".pit")
-                            {
-                                PitDetect?.Invoke(Tiem.Filename, filename);
-                                continue;
-                            }
-                            else if (Extension == ".lz4")
+                            if (Extension == ".lz4")
                             {
                                 file.RawSize = odin.CalculateLz4SizeFromTar(filename, Tiem.Filename);
                             }
@@ -126,7 +151,7 @@ namespace Odin_Flash.Controls
         {
             FlashFile.Clear();
             view.Refresh();
-            txtSelectTeam.Text = $"Select {Package} Package";
+            txtSelectTeam.Text = $"Select {PackageSlot} package";
             BtnClear.Visibility = Visibility.Collapsed;
 
         }

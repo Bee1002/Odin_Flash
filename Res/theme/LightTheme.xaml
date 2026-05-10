@@ -1,16 +1,151 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!-- Simple theme without MaterialDesign -->
-    <SolidColorBrush x:Key="PrimaryHueDarkBrush" Color="#263238"/>
-    <SolidColorBrush x:Key="PrimaryHueDarkForegroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PrimaryHueLightBrush" Color="#263238"/>
-    <SolidColorBrush x:Key="PrimaryHueLightForegroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PrimaryHueMidBrush" Color="#263238"/>
-    <SolidColorBrush x:Key="PrimaryHueMidForegroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="SecondaryHueLightBrush" Color="#2e8276"/>
-    <SolidColorBrush x:Key="SecondaryHueLightForegroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="SecondaryHueDarkBrush" Color="#2e8276"/>
-    <SolidColorBrush x:Key="SecondaryHueDarkForegroundBrush" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="TabColorBrush" Color="#263238"/>
-    <SolidColorBrush x:Key="TabColorForegroundBrush" Color="#FFFFFF"/>
+    <!-- Tema oscuro inspirado en AresEditor, sin depender de MaterialDesign. -->
+    <Color x:Key="AresBackgroundColor">#0D1117</Color>
+    <Color x:Key="AresSurfaceColor">#CC212121</Color>
+    <Color x:Key="AresPanelColor">#161B22</Color>
+    <Color x:Key="AresAccentColor">#00FFC6</Color>
+    <Color x:Key="AresAccentHoverColor">#00E6B8</Color>
+    <Color x:Key="AresActionBlueColor">#2196F3</Color>
+    <Color x:Key="AresActionBlueHoverColor">#1976D2</Color>
+    <Color x:Key="AresTextColor">#F8F9FA</Color>
+    <Color x:Key="AresMutedTextColor">#D1D5DB</Color>
+    <Color x:Key="AresErrorColor">#FF6B6B</Color>
+    <Color x:Key="AresSuccessColor">#10B981</Color>
+    <Color x:Key="AresReadyColor">#6EE7B7</Color>
+    <Color x:Key="AresFileTextColor">#64B5F6</Color>
+
+    <SolidColorBrush x:Key="PrimaryHueDarkBrush" Color="{StaticResource AresBackgroundColor}"/>
+    <SolidColorBrush x:Key="PrimaryHueDarkForegroundBrush" Color="{StaticResource AresTextColor}"/>
+    <SolidColorBrush x:Key="PrimaryHueLightBrush" Color="{StaticResource AresPanelColor}"/>
+    <SolidColorBrush x:Key="PrimaryHueLightForegroundBrush" Color="{StaticResource AresTextColor}"/>
+    <SolidColorBrush x:Key="PrimaryHueMidBrush" Color="{StaticResource AresSurfaceColor}"/>
+    <SolidColorBrush x:Key="PrimaryHueMidForegroundBrush" Color="{StaticResource AresTextColor}"/>
+    <SolidColorBrush x:Key="SecondaryHueLightBrush" Color="{StaticResource AresAccentColor}"/>
+    <SolidColorBrush x:Key="SecondaryHueLightForegroundBrush" Color="{StaticResource AresBackgroundColor}"/>
+    <SolidColorBrush x:Key="SecondaryHueDarkBrush" Color="{StaticResource AresAccentHoverColor}"/>
+    <SolidColorBrush x:Key="SecondaryHueDarkForegroundBrush" Color="{StaticResource AresBackgroundColor}"/>
+    <SolidColorBrush x:Key="TabColorBrush" Color="{StaticResource AresPanelColor}"/>
+    <SolidColorBrush x:Key="TabColorForegroundBrush" Color="{StaticResource AresMutedTextColor}"/>
+
+    <SolidColorBrush x:Key="ActionBlueBrush" Color="{StaticResource AresActionBlueColor}"/>
+    <SolidColorBrush x:Key="ActionBlueHoverBrush" Color="{StaticResource AresActionBlueHoverColor}"/>
+    <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource AresErrorColor}"/>
+    <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource AresSuccessColor}"/>
+    <SolidColorBrush x:Key="ReadyBrush" Color="{StaticResource AresReadyColor}"/>
+    <SolidColorBrush x:Key="FileTextBrush" Color="{StaticResource AresFileTextColor}"/>
+    <SolidColorBrush x:Key="AresCardBrush" Color="#7A161B22"/>
+    <SolidColorBrush x:Key="AresInputBrush" Color="#4D10161D"/>
+    <SolidColorBrush x:Key="AresSoftBorderBrush" Color="#2200FFC6"/>
+
+    <DropShadowEffect x:Key="AresCardShadow"
+                      BlurRadius="18"
+                      ShadowDepth="0"
+                      Color="#AA000000"
+                      Opacity="0.35"/>
+
+    <DropShadowEffect x:Key="AresAccentGlow"
+                      BlurRadius="18"
+                      ShadowDepth="0"
+                      Color="{StaticResource AresAccentColor}"
+                      Opacity="0.18"/>
+
+    <Style TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource ActionBlueBrush}"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Padding" Value="12,6"/>
+        <Setter Property="MinHeight" Value="30"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="ButtonBorder"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="8"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource ActionBlueHoverBrush}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.85"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.35"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="WindowControlButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Width" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Background" Value="#222196F3"/>
+        <Setter Property="Foreground" Value="{StaticResource PrimaryHueDarkForegroundBrush}"/>
+    </Style>
+
+    <Style x:Key="CloseWindowButtonStyle" TargetType="Button" BasedOn="{StaticResource WindowControlButtonStyle}">
+        <Setter Property="Background" Value="#33FF6B6B"/>
+    </Style>
+
+    <Style x:Key="PrimaryActionButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="{StaticResource ActionBlueBrush}"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="FontSize" Value="15"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="MinHeight" Value="42"/>
+        <Setter Property="Effect" Value="{StaticResource AresAccentGlow}"/>
+    </Style>
+
+    <Style x:Key="SecondaryActionButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Background" Value="#3300FFC6"/>
+        <Setter Property="Foreground" Value="{StaticResource PrimaryHueDarkForegroundBrush}"/>
+        <Setter Property="MinHeight" Value="42"/>
+    </Style>
+
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{StaticResource AresInputBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource PrimaryHueDarkForegroundBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource AresSoftBorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="CaretBrush" Value="{StaticResource SecondaryHueLightBrush}"/>
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{StaticResource AresInputBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource PrimaryHueDarkForegroundBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource AresSoftBorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="MinHeight" Value="34"/>
+    </Style>
+
+    <Style TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{StaticResource PrimaryHueDarkForegroundBrush}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+
+    <Style TargetType="GroupBox">
+        <Setter Property="Foreground" Value="{StaticResource SecondaryHueLightBrush}"/>
+        <Setter Property="BorderBrush" Value="#3300FFC6"/>
+        <Setter Property="Background" Value="{StaticResource TabColorBrush}"/>
+        <Setter Property="Padding" Value="8"/>
+    </Style>
+
+    <Style TargetType="ProgressBar">
+        <Setter Property="Foreground" Value="{StaticResource SecondaryHueLightBrush}"/>
+        <Setter Property="Background" Value="#332196F3"/>
+        <Setter Property="Height" Value="10"/>
+    </Style>
 </ResourceDictionary>

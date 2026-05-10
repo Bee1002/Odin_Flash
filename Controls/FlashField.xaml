@@ -5,41 +5,60 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              xmlns:local="clr-namespace:Odin_Flash.Controls"
              mc:Ignorable="d" >
-    <Grid>
-        <Grid.ColumnDefinitions >
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="auto"/>
-            <ColumnDefinition Width="auto"/>
-        </Grid.ColumnDefinitions>
-        <Grid Grid.Column="0">
-            <ComboBox SelectionChanged="CmbBxListFile_SelectionChanged"
-                     
-                  Name="CmbBxListFile"
-                  SelectedValue="{Binding FilePath}" 
-                  Margin="4" >
-                <ComboBox.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <VirtualizingStackPanel IsVirtualizing="True" VirtualizationMode="Recycling"></VirtualizingStackPanel>
-                    </ItemsPanelTemplate>
-                </ComboBox.ItemsPanel>
-                <ComboBox.ItemTemplate>
-                    <DataTemplate >
-                        <CheckBox IsChecked="{Binding Enable}"
-                                      Content="{Binding FileName}"/>
-                    </DataTemplate>
-                </ComboBox.ItemTemplate>
+    <Border CornerRadius="9"
+            Background="{DynamicResource AresCardBrush}"
+            BorderBrush="{DynamicResource AresSoftBorderBrush}"
+            BorderThickness="1"
+            Padding="8"
+            Margin="0,0,0,6">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="auto"/>
+                <ColumnDefinition Width="auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid Grid.Column="0">
+                <ComboBox SelectionChanged="CmbBxListFile_SelectionChanged"
+                          Name="CmbBxListFile"
+                          SelectedValue="{Binding FilePath}"
+                          Margin="0,0,8,0"
+                          MinHeight="36">
+                    <ComboBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel IsVirtualizing="True" VirtualizationMode="Recycling"/>
+                        </ItemsPanelTemplate>
+                    </ComboBox.ItemsPanel>
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding Enable}"
+                                      Content="{Binding FileName}"
+                                      Foreground="{DynamicResource FileTextBrush}"
+                                      FontWeight="SemiBold"/>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
 
-            </ComboBox>
-            <TextBlock Foreground="Gray" IsHitTestVisible="False" Margin="8,5,20,0" Name="txtSelectTeam" VerticalAlignment="Center" ></TextBlock>
+                </ComboBox>
+                <TextBlock Foreground="{DynamicResource FileTextBrush}"
+                           IsHitTestVisible="False"
+                           Margin="10,0,18,0"
+                           Name="txtSelectTeam"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"/>
+            </Grid>
+
+
+            <Button x:Name="BtnClear"
+                    Click="BtnClear_Click"
+                    Margin="0,0,6,0"
+                    Grid.Column="1"
+                    Content="Clear"
+                    MinWidth="56"/>
+            <Button x:Name="BtnChooseFile"
+                    Click="BtnChooseFile_Click"
+                    Grid.Column="2"
+                    Content="Browse"
+                    MinWidth="88"/>
         </Grid>
-
-
-        <Button x:Name="BtnClear"
-                Click="BtnClear_Click" 
-                Margin="4" Grid.Column="1" Content="Clear"/>
-        <Button
-                x:Name="BtnChooseFile"
-                Click="BtnChooseFile_Click"
-                Margin="4" Grid.Column="2" Content="Browse" />
-    </Grid>
+    </Border>
 </UserControl>
