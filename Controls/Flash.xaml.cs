@@ -235,7 +235,7 @@ namespace Odin_Flash.Controls
 
         private void LogGoodJob()
         {
-            Log?.Invoke("\nGood Job Boy 👍", MsgType.Result);
+            Log?.Invoke("\n Good Job Boy 👍", MsgType.Result);
         }
 
         private async void BtnFlash_Click(object sender, RoutedEventArgs e)
