@@ -1,0 +1,59 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Odin_Flash", "Odin_Flash.csproj", "{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Lib", "Lib", "{3A8DF596-E814-FECC-DD4B-D8EF8AAC1A0D}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OdinProtocolAtack", "OdinProtocolAtack", "{6217E8BD-82C9-4EB7-7FE7-ED352B639606}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Library", "Library", "{24073CF8-50BA-34FD-D020-E6C32E9817F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OdinProtocolAtack", "Lib\OdinProtocolAtack\Library\OdinProtocolAtack.csproj", "{3CC51372-CAF9-4E67-913D-CAC3686024BB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|x64.Build.0 = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Debug|x86.Build.0 = Debug|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|x64.ActiveCfg = Release|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|x64.Build.0 = Release|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|x86.ActiveCfg = Release|Any CPU
+		{D4CDC56A-7B1D-40B6-B6C0-FDFEB9BA1014}.Release|x86.Build.0 = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|x64.Build.0 = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Debug|x86.Build.0 = Debug|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|x64.ActiveCfg = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|x64.Build.0 = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|x86.ActiveCfg = Release|Any CPU
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{6217E8BD-82C9-4EB7-7FE7-ED352B639606} = {3A8DF596-E814-FECC-DD4B-D8EF8AAC1A0D}
+		{24073CF8-50BA-34FD-D020-E6C32E9817F6} = {6217E8BD-82C9-4EB7-7FE7-ED352B639606}
+		{3CC51372-CAF9-4E67-913D-CAC3686024BB} = {24073CF8-50BA-34FD-D020-E6C32E9817F6}
+	EndGlobalSection
+EndGlobal
