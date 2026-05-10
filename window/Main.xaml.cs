@@ -4,14 +4,12 @@ using System;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Windows.Documents;
-using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
-using System.Windows.Shapes;
 using System.Windows.Threading;
+using Wpf.Ui.Appearance;
+using FluentWindow = Wpf.Ui.Controls.FluentWindow;
 using MsgType = OdinProtocolAtack.util.utils.MsgType;
 
 namespace Odin_Flash.window
@@ -20,7 +18,7 @@ namespace Odin_Flash.window
     /// Equivalente a Freya.window.Main: Flash embebido, log enriquecido, Stop → Odin.StopOperations.
     /// MsgType viene de OdinProtocolAtack (antes SharpOdinClient.util.utils.MsgType).
     /// </summary>
-    public partial class Main : Window
+    public partial class Main : FluentWindow
     {
 
         public Flash Flash;
@@ -31,6 +29,8 @@ namespace Odin_Flash.window
         public Main()
         {
             InitializeComponent();
+            ApplicationThemeManager.Apply(ApplicationTheme.Dark);
+
             Flash = new Flash();
             Flash.Log += Flash_Log;
             Flash.ProgressChanged += Flash_ProgressChanged;
@@ -86,7 +86,7 @@ namespace Odin_Flash.window
             Application.Current.Dispatcher.Invoke(() => {
                 ProgBar.Maximum = max;
                 ProgBar.Value = value;
-                Events.Content = $"{filename} | {WritenSize:###,###,###}";
+                Events.Text = $"{filename} | {WritenSize:###,###,###}";
                 Events.Foreground = GetBrush("FileTextBrush", Brushes.DodgerBlue);
             });
         }
@@ -171,12 +171,12 @@ namespace Odin_Flash.window
 
         private void SetDeviceStatus(string deviceState, string eventState, bool connected)
         {
-            ConnectedName.Content = deviceState;
+            ConnectedName.Text = deviceState;
             ConnectedName.Foreground = connected
                 ? GetBrush("PrimaryHueDarkForegroundBrush", Brushes.White)
                 : GetBrush("ErrorBrush", Brushes.IndianRed);
 
-            Events.Content = eventState;
+            Events.Text = eventState;
             Events.Foreground = connected
                 ? GetBrush("ReadyBrush", Brushes.LightGreen)
                 : GetBrush("TabColorForegroundBrush", Brushes.LightGray);
@@ -185,13 +185,6 @@ namespace Odin_Flash.window
         private static Brush GetBrush(string key, Brush fallback)
         {
             return Application.Current.TryFindResource(key) as Brush ?? fallback;
-        }
-
-        private void BtnClose_Click(object sender, RoutedEventArgs e)
-        {
-            this.Close();
-            Application.Current.Shutdown();
-            Process.GetCurrentProcess().Kill();
         }
 
         private void RichLog_TextChanged(object sender, TextChangedEventArgs e)
@@ -205,34 +198,6 @@ namespace Odin_Flash.window
                 BtnClearRich.Visibility = Visibility.Visible;
             }
         }
-
-        private void BtnMinMaximizeWindow_Click(object sender, RoutedEventArgs e)
-        {
-            if (WindowState == WindowState.Maximized)
-            {
-                WindowState = WindowState.Normal;
-                BtnMinMaximizeWindow.Content = "□";
-            }
-            else
-            {
-                WindowState = WindowState.Maximized;
-                BtnMinMaximizeWindow.Content = "❐";
-            }
-
-        }
-        private void Grid_MouseMove(object sender, MouseEventArgs e)
-        {
-            if (e.LeftButton == MouseButtonState.Pressed)
-            {
-                this.DragMove();
-            }
-        }
-        private void BtnMinMaxWindow_Click(object sender, RoutedEventArgs e)
-        {
-            WindowState = WindowState.Minimized;
-
-        }
-       
 
         private void BtnClearRich_Click(object sender, RoutedEventArgs e)
         {

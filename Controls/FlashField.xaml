@@ -4,13 +4,13 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              xmlns:local="clr-namespace:Odin_Flash.Controls"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
              mc:Ignorable="d" >
-    <Border CornerRadius="9"
-            Background="{DynamicResource AresCardBrush}"
-            BorderBrush="{DynamicResource AresSoftBorderBrush}"
-            BorderThickness="1"
-            Padding="8"
-            Margin="0,0,0,6">
+    <ui:Card Background="{DynamicResource AresCardBrush}"
+             BorderBrush="{DynamicResource AresSoftBorderBrush}"
+             BorderThickness="1"
+             Padding="8"
+             Margin="0,0,0,6">
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -38,27 +38,37 @@
                     </ComboBox.ItemTemplate>
 
                 </ComboBox>
-                <TextBlock Foreground="{DynamicResource FileTextBrush}"
-                           IsHitTestVisible="False"
-                           Margin="10,0,18,0"
-                           Name="txtSelectTeam"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center"/>
+                <ui:TextBlock Foreground="{DynamicResource FileTextBrush}"
+                              IsHitTestVisible="False"
+                              Margin="10,0,18,0"
+                              Name="txtSelectTeam"
+                              FontTypography="Caption"
+                              FontWeight="SemiBold"
+                              VerticalAlignment="Center"/>
             </Grid>
 
 
-            <Button x:Name="BtnClear"
-                    Click="BtnClear_Click"
-                    Margin="0,0,6,0"
-                    Grid.Column="1"
-                    Content="Clear"
-                    MinWidth="56"/>
-            <Button x:Name="BtnChooseFile"
-                    Click="BtnChooseFile_Click"
-                    Grid.Column="2"
-                    Content="Browse"
-                    MinWidth="88"/>
+            <ui:Button x:Name="BtnClear"
+                       Appearance="Secondary"
+                       Click="BtnClear_Click"
+                       Margin="0,0,6,0"
+                       Grid.Column="1"
+                       Content="Clear"
+                       MinWidth="56">
+                <ui:Button.Icon>
+                    <ui:SymbolIcon Symbol="Delete16"/>
+                </ui:Button.Icon>
+            </ui:Button>
+            <ui:Button x:Name="BtnChooseFile"
+                       Appearance="Primary"
+                       Click="BtnChooseFile_Click"
+                       Grid.Column="2"
+                       Content="Browse"
+                       MinWidth="88">
+                <ui:Button.Icon>
+                    <ui:SymbolIcon Symbol="FolderOpen16"/>
+                </ui:Button.Icon>
+            </ui:Button>
         </Grid>
-    </Border>
+    </ui:Card>
 </UserControl>

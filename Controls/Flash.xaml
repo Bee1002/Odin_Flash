@@ -4,11 +4,12 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:local="clr-namespace:Odin_Flash.Controls"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
              mc:Ignorable="d"
              TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
              Background="Transparent"
              d:DesignWidth="500">
-    <!-- Misma estructura funcional que Freya.Controls.Flash; estilo visual Material-like con recursos del tema. -->
+    <!-- Misma estructura funcional que Freya.Controls.Flash; visual migrado gradualmente a WPF-UI. -->
     <Grid Background="Transparent">
         <Grid Margin="0">
             <Grid.RowDefinitions>
@@ -24,10 +25,9 @@
                     <ColumnDefinition Width="auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0">
-                    <TextBlock Text="Firmware"
-                               FontSize="18"
-                               FontWeight="Bold"
-                               Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
+                    <ui:TextBlock Text="Firmware"
+                                  FontTypography="Title"
+                                  Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
                 </StackPanel>
             </Grid>
 
@@ -40,12 +40,11 @@
                       Margin="0,0,0,8"
                       IsExpanded="False">
                 <StackPanel Margin="0,6,0,0">
-                    <Border CornerRadius="10"
-                            Background="{DynamicResource AresCardBrush}"
-                            BorderBrush="{DynamicResource AresSoftBorderBrush}"
-                            BorderThickness="1"
-                            Padding="10"
-                            Margin="0,0,0,6">
+                    <ui:Card Background="{DynamicResource AresCardBrush}"
+                             BorderBrush="{DynamicResource AresSoftBorderBrush}"
+                             BorderThickness="1"
+                             Padding="10"
+                             Margin="0,0,0,6">
                         <Grid x:Name="Pit">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="auto"/>
@@ -53,57 +52,66 @@
                                 <ColumnDefinition Width="auto"/>
                                 <ColumnDefinition Width="auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0"
-                                       Text="PIT"
-                                       FontWeight="Bold"
-                                       Foreground="{DynamicResource SecondaryHueLightBrush}"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,10,0"/>
-                            <TextBox Grid.Column="1"
-                                     Text=""
-                                     IsReadOnly="True"
-                                     VerticalAlignment="Center"
-                                     Margin="0,0,8,0"
-                                     AcceptsReturn="False"
-                                     Name="TxtBxPit"
-                                     TextChanged="TxtBxPit_TextChanged"
-                                     ToolTip="PIT File"/>
-                            <Button x:Name="BtnClearPit"
-                                    Click="BtnClearPit_Click"
-                                    Margin="0,0,6,0"
-                                    Grid.Column="2"
-                                    Content="Clear"
-                                    MinWidth="58"/>
-                            <Button x:Name="BtnChoosePit"
-                                    Click="BtnChoosePit_Click"
-                                    Grid.Column="3"
-                                    Content="Load PIT"
-                                    MinWidth="82"/>
+                            <ui:TextBlock Grid.Column="0"
+                                          Text="PIT"
+                                          FontTypography="BodyStrong"
+                                          Foreground="{DynamicResource SecondaryHueLightBrush}"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,10,0"/>
+                            <ui:TextBox Grid.Column="1"
+                                        Text=""
+                                        IsReadOnly="True"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,8,0"
+                                        AcceptsReturn="False"
+                                        Name="TxtBxPit"
+                                        TextChanged="TxtBxPit_TextChanged"
+                                        ToolTip="PIT File"/>
+                            <ui:Button x:Name="BtnClearPit"
+                                       Appearance="Secondary"
+                                       Click="BtnClearPit_Click"
+                                       Margin="0,0,6,0"
+                                       Grid.Column="2"
+                                       Content="Clear"
+                                       MinWidth="58">
+                                <ui:Button.Icon>
+                                    <ui:SymbolIcon Symbol="Delete16"/>
+                                </ui:Button.Icon>
+                            </ui:Button>
+                            <ui:Button x:Name="BtnChoosePit"
+                                       Appearance="Secondary"
+                                       Click="BtnChoosePit_Click"
+                                       Grid.Column="3"
+                                       Content="Load PIT"
+                                       MinWidth="82">
+                                <ui:Button.Icon>
+                                    <ui:SymbolIcon Symbol="DocumentAdd20"/>
+                                </ui:Button.Icon>
+                            </ui:Button>
                         </Grid>
-                    </Border>
-                    <Border CornerRadius="10"
-                            Background="{DynamicResource AresCardBrush}"
-                            BorderBrush="{DynamicResource AresSoftBorderBrush}"
-                            BorderThickness="1"
-                            Padding="8">
+                    </ui:Card>
+                    <ui:Card Background="{DynamicResource AresCardBrush}"
+                             BorderBrush="{DynamicResource AresSoftBorderBrush}"
+                             BorderThickness="1"
+                             Padding="8">
                         <WrapPanel Orientation="Horizontal">
-                            <CheckBox Content="Auto reboot"
-                                      Name="AutoBoot"
-                                      Margin="6"
-                                      IsChecked="True"/>
-                            <CheckBox Name="RepartitionCheckBx"
-                                      Content="Repartition"
-                                      Margin="6"
-                                      IsChecked="False"
-                                      Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
-                            <CheckBox Content="Update boot"
-                                      x:Name="BootUpdate"
-                                      Margin="6"/>
-                            <CheckBox Content="Clear EFS"
-                                      x:Name="EfsClear"
-                                      Margin="6"/>
+                            <ui:ToggleSwitch Content="Auto reboot"
+                                             Name="AutoBoot"
+                                             Margin="6"
+                                             IsChecked="True"/>
+                            <ui:ToggleSwitch Name="RepartitionCheckBx"
+                                             Content="Repartition"
+                                             Margin="6"
+                                             IsChecked="False"
+                                             Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
+                            <ui:ToggleSwitch Content="Update boot"
+                                             x:Name="BootUpdate"
+                                             Margin="6"/>
+                            <ui:ToggleSwitch Content="Clear EFS"
+                                             x:Name="EfsClear"
+                                             Margin="6"/>
                         </WrapPanel>
-                    </Border>
+                    </ui:Card>
                 </StackPanel>
             </Expander>
 
@@ -112,36 +120,42 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="auto"/>
                 </Grid.ColumnDefinitions>
-                <Button Margin="0,0,8,0"
-                        Grid.Column="0"
-                        Name="BtnFlash"
-                        Click="BtnFlash_Click"
-                        Style="{DynamicResource PrimaryActionButtonStyle}">
+                <ui:Button Margin="0,0,8,0"
+                           Grid.Column="0"
+                           Name="BtnFlash"
+                           Appearance="Primary"
+                           Click="BtnFlash_Click">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="ArrowForwardDownLightning20"/>
+                    </ui:Button.Icon>
                     <StackPanel Orientation="Horizontal"
                                 VerticalAlignment="Center"
                                 HorizontalAlignment="Center">
-                        <TextBlock Name="LblFastFlash"
-                                   Text="Flash"
-                                   VerticalAlignment="Center"/>
+                        <ui:TextBlock Name="LblFastFlash"
+                                      Text="Flash"
+                                      VerticalAlignment="Center"/>
                     </StackPanel>
-                </Button>
-                <Button Margin="5"
-                        Grid.Column="1"
-                        Name="BtnReadPit"
-                        Click="BtnReadPit_Click"
-                        Style="{DynamicResource SecondaryActionButtonStyle}">
+                </ui:Button>
+                <ui:Button Margin="5"
+                           Grid.Column="1"
+                           Name="BtnReadPit"
+                           Appearance="Secondary"
+                           Click="BtnReadPit_Click">
+                    <ui:Button.Icon>
+                        <ui:SymbolIcon Symbol="DocumentSearch16"/>
+                    </ui:Button.Icon>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Name="LblReadPit"
-                                   Text="Read PIT"
-                                   Margin="5"
-                                   Grid.Column="0"
-                                   VerticalAlignment="Center"/>
+                        <ui:TextBlock Name="LblReadPit"
+                                      Text="Read PIT"
+                                      Margin="5"
+                                      Grid.Column="0"
+                                      VerticalAlignment="Center"/>
                     </Grid>
-                </Button>
+                </ui:Button>
             </Grid>
         </Grid>
     </Grid>
