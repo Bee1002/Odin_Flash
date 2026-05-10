@@ -12,6 +12,8 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using static OdinProtocolAtack.util.utils;
 
+// Aki ocurre la magia de la escritura de las particiones
+
 namespace OdinProtocolAtack
 {
     public class Odin

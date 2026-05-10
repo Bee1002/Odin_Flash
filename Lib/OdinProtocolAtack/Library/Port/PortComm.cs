@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 namespace OdinProtocolAtack.Port
 {
   
-  
     public class PortComm
     {
         private static List<ItypePort> ListOfComPort = new List<ItypePort>();

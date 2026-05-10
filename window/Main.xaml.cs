@@ -9,6 +9,7 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Navigation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using MsgType = OdinProtocolAtack.util.utils.MsgType;
@@ -241,6 +242,15 @@ namespace Odin_Flash.window
         private void BtnStop_Click(object sender, RoutedEventArgs e)
         {
             Flash.Odin.StopOperations();
+        }
+
+        private void PhonePartsLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri)
+            {
+                UseShellExecute = true
+            });
+            e.Handled = true;
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
