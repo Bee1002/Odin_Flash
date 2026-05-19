@@ -1,9 +1,9 @@
-using OdinProtocolAtack.Port;
-using OdinProtocolAtack.structs;
+using OdinFlash.Protocol.Port;
+using OdinFlash.Protocol.structs;
 using System;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack
+namespace OdinFlash.Protocol
 {
     public class Cmd
     {

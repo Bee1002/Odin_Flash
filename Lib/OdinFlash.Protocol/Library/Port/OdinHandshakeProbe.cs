@@ -3,7 +3,7 @@ using System.IO.Ports;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack.Port
+namespace OdinFlash.Protocol.Port
 {
     /// <summary>
     /// Escaneo COM si WMI no encuentra "Samsung Mobile USB Modem". Usa los mismos tiempos que <see cref="device"/>.

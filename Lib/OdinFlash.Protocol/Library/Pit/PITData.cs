@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack.Pit
+namespace OdinFlash.Protocol.Pit
 {
 	public enum TPitEntry
 	{

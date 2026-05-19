@@ -9,7 +9,6 @@
              TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
              Background="Transparent"
              d:DesignWidth="500">
-    <!-- Misma estructura funcional que Freya.Controls.Flash; visual migrado gradualmente a WPF-UI. -->
     <Grid Background="Transparent">
         <Grid Margin="2">
             <Grid.RowDefinitions>

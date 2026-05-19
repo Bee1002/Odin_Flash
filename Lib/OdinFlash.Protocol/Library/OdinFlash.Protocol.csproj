@@ -8,8 +8,8 @@
     <ProjectGuid>{3CC51372-CAF9-4E67-913D-CAC3686024BB}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>OdinProtocolAtack</RootNamespace>
-    <AssemblyName>OdinProtocolAtack</AssemblyName>
+    <RootNamespace>OdinFlash.Protocol</RootNamespace>
+    <AssemblyName>OdinFlash.Protocol</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>

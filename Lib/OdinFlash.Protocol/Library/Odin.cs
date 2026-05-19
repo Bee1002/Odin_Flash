@@ -1,8 +1,8 @@
 using K4os.Compression.LZ4.Streams;
-using OdinProtocolAtack.Pit;
-using OdinProtocolAtack.Port;
-using OdinProtocolAtack.structs;
-using OdinProtocolAtack.util;
+using OdinFlash.Protocol.Pit;
+using OdinFlash.Protocol.Port;
+using OdinFlash.Protocol.structs;
+using OdinFlash.Protocol.util;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -11,15 +11,15 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using static OdinProtocolAtack.util.utils;
+using static OdinFlash.Protocol.util.utils;
 
 // Aki ocurre la magia de la escritura de las particiones
 
-namespace OdinProtocolAtack
+namespace OdinFlash.Protocol
 {
     public class Odin
     {
-        /// <summary>Máx. bytes por paquete en NAND (cmd 102). SharpOdin/Freya usan 1 MiB fijo por iteración.</summary>
+        /// <summary>Máx. bytes por paquete en NAND (cmd 102). Por defecto 1 MiB; puede reducirse según Capa.</summary>
         public static int FlashChunkBytes { get; set; } = 1048576;
 
         /// <summary>Milisegundos de espera tras cada escritura de trozo y antes de leer el ACK de 8 bytes (0 = desactivado).</summary>
@@ -68,7 +68,7 @@ namespace OdinProtocolAtack
 
 
         /// <summary>
-        /// Localiza COM en modo download: primero WMI (como Freya/SharpOdin); si falla, escaneo handshake ODIN/LOKE.
+        /// Localiza COM en modo download: primero WMI; si falla, escaneo handshake ODIN/LOKE.
         /// Tras abrir, aplica secuencia DTR/RTS + purge para alinear con el mismo orden que el escaneo y reducir timeouts espurios.
         /// </summary>
         public async Task<bool> FindAndSetDownloadMode()
@@ -535,9 +535,9 @@ namespace OdinProtocolAtack
             }
         }
      
-        public List<FileFlash> CurreptedPartitions(List<FileFlash> ready, List<FileFlash> Writed)
+        public List<FileFlash> CorruptedPartitions(List<FileFlash> ready, List<FileFlash> Writed)
         {
-            var ListCurrepted = new List<FileFlash>();
+            var ListCorrupted = new List<FileFlash>();
             foreach (var item in ready)
             {
                 if (!item.Enable || !IsFlashableFile(item))
@@ -554,10 +554,10 @@ namespace OdinProtocolAtack
                 }
                 if (!exst)
                 {
-                    ListCurrepted.Add(item);
+                    ListCorrupted.Add(item);
                 }
             }
-            return ListCurrepted;
+            return ListCorrupted;
         }
         
         public async Task<bool> FlashFirmware(List<FileFlash> list, List<TPIT_Entry> pit, int EfsClear, int BootUpdate, bool Debug)
@@ -604,13 +604,13 @@ namespace OdinProtocolAtack
                 }
             }
 
-            var GetCurrepted = CurreptedPartitions(list, WritenItem);
-            if (GetCurrepted.Count > 0)
+            var GetCorrupted = CorruptedPartitions(list, WritenItem);
+            if (GetCorrupted.Count > 0)
             {
                 Log?.Invoke("File partition cannot find in your device partition : ", MsgType.Message);
-                foreach (var currepted in GetCurrepted)
+                foreach (var corrupted in GetCorrupted)
                 {
-                    Log?.Invoke(currepted.FileName + ", ", MsgType.Result , true);
+                    Log?.Invoke(corrupted.FileName + ", ", MsgType.Result , true);
                 }
                 return false;
             }

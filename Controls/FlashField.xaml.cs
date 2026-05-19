@@ -1,7 +1,7 @@
 using Odin_Flash.Util;
 using Microsoft.Win32;
-using OdinProtocolAtack;
-using OdinProtocolAtack.util;
+using OdinFlash.Protocol;
+using OdinFlash.Protocol.util;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -101,7 +101,7 @@ namespace Odin_Flash.Controls
             var dlg = new OpenFileDialog
             {
                 DefaultExt = ".tar",
-                Filter = "samsung firmware|*.tar;*.md5;*.limra"
+                Filter = "samsung firmware|*.tar;*.md5"
             };
             bool? result = dlg.ShowDialog();
             if (result == true)

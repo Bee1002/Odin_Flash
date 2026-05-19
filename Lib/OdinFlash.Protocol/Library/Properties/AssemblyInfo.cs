@@ -4,11 +4,11 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("OdinProtocolAtack")]
-[assembly: AssemblyDescription("OdinProtocolAtack is a .NET library that allows .NET applications to communicate with Samsung Android devices in download mode. Suitable for flash (image, tar.md5, lz4), getting device info and other features. Provides a .NET implementation of the Odin / LOKE protocol.")]
+[assembly: AssemblyTitle("OdinFlash.Protocol")]
+[assembly: AssemblyDescription(".NET library for Samsung devices in download mode: flash (tar, lz4, images), PIT, device info. LOKE/Odin protocol implementation for Odin_Flash.")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("OdinProtocolAtack")]
+[assembly: AssemblyProduct("OdinFlash.Protocol")]
 [assembly: AssemblyCopyright("Copyright ©  2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]

@@ -1,13 +1,13 @@
 using Odin_Flash.Util;
 using Microsoft.Win32;
-using OdinProtocolAtack;
+using OdinFlash.Protocol;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using static OdinProtocolAtack.util.utils;
+using static OdinFlash.Protocol.util.utils;
 
 namespace Odin_Flash.Controls
 {
@@ -144,13 +144,13 @@ namespace Odin_Flash.Controls
             }
         }
 
-        /// <summary>Misma secuencia que Freya.Controls.Flash.DoFlash (SharpOdinClient → OdinProtocolAtack).</summary>
+        /// <summary>Flujo completo: puerto download → init LOKE → PIT → firmware → reboot opcional.</summary>
         public async Task DoFlash(long Size, List<FileFlash> ListFlash)
         {
-            var list = new List<OdinProtocolAtack.structs.FileFlash>();
+            var list = new List<OdinFlash.Protocol.structs.FileFlash>();
             foreach (var i in ListFlash)
             {
-                list.Add(new OdinProtocolAtack.structs.FileFlash
+                list.Add(new OdinFlash.Protocol.structs.FileFlash
                 {
                     Enable = i.Enable,
                     FileName = i.FileName,

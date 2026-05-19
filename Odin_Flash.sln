@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -7,11 +7,11 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Odin_Flash", "Odin_Flash.cs
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Lib", "Lib", "{3A8DF596-E814-FECC-DD4B-D8EF8AAC1A0D}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OdinProtocolAtack", "OdinProtocolAtack", "{6217E8BD-82C9-4EB7-7FE7-ED352B639606}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "OdinFlash.Protocol", "OdinFlash.Protocol", "{6217E8BD-82C9-4EB7-7FE7-ED352B639606}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Library", "Library", "{24073CF8-50BA-34FD-D020-E6C32E9817F6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OdinProtocolAtack", "Lib\OdinProtocolAtack\Library\OdinProtocolAtack.csproj", "{3CC51372-CAF9-4E67-913D-CAC3686024BB}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OdinFlash.Protocol", "Lib\OdinFlash.Protocol\Library\OdinFlash.Protocol.csproj", "{3CC51372-CAF9-4E67-913D-CAC3686024BB}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

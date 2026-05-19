@@ -6,7 +6,7 @@ namespace Odin_Flash.Util
 {
     public delegate void IsRunningProcessDelegate(bool IsRunning, string process);
 
-    /// <summary>Equivalente funcional a Freya.Util.Util; métodos extra para formato de log estilo Odin.</summary>
+    /// <summary>Utilidades de Odin_Flash (rutas, formato de log).</summary>
     public class Util
     {
         /// <summary>Cultura para el log estilo Odin (ej. 9,258 GB).</summary>

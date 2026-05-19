@@ -1,5 +1,5 @@
 
-namespace OdinProtocolAtack.util
+namespace OdinFlash.Protocol.util
 {
     public static class utils
     {

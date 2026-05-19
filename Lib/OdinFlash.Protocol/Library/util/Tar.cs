@@ -4,9 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using static OdinProtocolAtack.util.utils;
+using static OdinFlash.Protocol.util.utils;
 
-namespace OdinProtocolAtack.util
+namespace OdinFlash.Protocol.util
 {
     public class cListFileData
     {

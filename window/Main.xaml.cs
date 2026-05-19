@@ -1,5 +1,5 @@
 using Odin_Flash.Controls;
-using OdinProtocolAtack.Port;
+using OdinFlash.Protocol.Port;
 using System;
 using System.Diagnostics;
 using System.Windows;
@@ -11,13 +11,12 @@ using System.Windows.Threading;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
 using FluentWindow = Wpf.Ui.Controls.FluentWindow;
-using MsgType = OdinProtocolAtack.util.utils.MsgType;
+using MsgType = OdinFlash.Protocol.util.utils.MsgType;
 
 namespace Odin_Flash.window
 {
     /// <summary>
-    /// Equivalente a Freya.window.Main: Flash embebido, log enriquecido, Stop → Odin.StopOperations.
-    /// MsgType viene de OdinProtocolAtack (antes SharpOdinClient.util.utils.MsgType).
+    /// Ventana principal: Flash embebido, log y Stop → Odin.StopOperations.
     /// </summary>
     public partial class Main : FluentWindow
     {

@@ -3,7 +3,7 @@ using System.IO.Ports;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack.Port
+namespace OdinFlash.Protocol.Port
 {
     /// <summary>
     /// Handshake liviano tipo respuesta a magic <c>ODIN</c>, alineado con <see cref="Odin.IsOdin"/>.

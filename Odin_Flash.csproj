@@ -199,9 +199,9 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="Lib\OdinProtocolAtack\Library\OdinProtocolAtack.csproj">
+    <ProjectReference Include="Lib\OdinFlash.Protocol\Library\OdinFlash.Protocol.csproj">
       <Project>{3CC51372-CAF9-4E67-913D-CAC3686024BB}</Project>
-      <Name>OdinProtocolAtack</Name>
+      <Name>OdinFlash.Protocol</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
@@ -229,10 +229,6 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\FlashField.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="Res\Language\English.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

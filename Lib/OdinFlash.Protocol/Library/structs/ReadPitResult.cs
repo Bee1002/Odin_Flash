@@ -1,7 +1,7 @@
-using OdinProtocolAtack.Pit;
+using OdinFlash.Protocol.Pit;
 using System.Collections.Generic;
 
-namespace OdinProtocolAtack.structs
+namespace OdinFlash.Protocol.structs
 {
     public struct ReadPitResult
     {

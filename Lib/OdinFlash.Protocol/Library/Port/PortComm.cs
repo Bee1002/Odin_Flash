@@ -1,10 +1,10 @@
-using OdinProtocolAtack.structs;
+using OdinFlash.Protocol.structs;
 using System;
 using System.Collections.Generic;
 using System.Management;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack.Port
+namespace OdinFlash.Protocol.Port
 {
   
     public class PortComm

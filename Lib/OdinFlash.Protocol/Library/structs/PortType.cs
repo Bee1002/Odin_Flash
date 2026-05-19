@@ -1,5 +1,5 @@
 
-namespace OdinProtocolAtack.structs
+namespace OdinFlash.Protocol.structs
 {
     public enum PortType
     {

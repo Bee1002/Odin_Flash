@@ -1,12 +1,12 @@
-using OdinProtocolAtack.structs;
-using OdinProtocolAtack.util;
+using OdinFlash.Protocol.structs;
+using OdinFlash.Protocol.util;
 using System;
 using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace OdinProtocolAtack.Port
+namespace OdinFlash.Protocol.Port
 {
     public class device
     {
