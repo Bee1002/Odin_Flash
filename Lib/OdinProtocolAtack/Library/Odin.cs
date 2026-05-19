@@ -6,6 +6,7 @@ using OdinProtocolAtack.util;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -18,14 +19,37 @@ namespace OdinProtocolAtack
 {
     public class Odin
     {
-        /// <summary>Máx. bytes por trozo en NAND Write (cmd 102 / 0x66). 128 KiB evita timeouts en preloader/particiones pequeñas.</summary>
-        public static int FlashChunkBytes { get; set; } = 131072;
+        /// <summary>Máx. bytes por paquete en NAND (cmd 102). SharpOdin/Freya usan 1 MiB fijo por iteración.</summary>
+        public static int FlashChunkBytes { get; set; } = 1048576;
 
         /// <summary>Milisegundos de espera tras cada escritura de trozo y antes de leer el ACK de 8 bytes (0 = desactivado).</summary>
         public static int FlashAckDelayMs { get; set; } = 0;
 
         /// <summary>Si es true, vacía el buffer de entrada tras el buffer reserve (102,2) y antes del primer byte de imagen.</summary>
         public static bool DiscardInBufferBeforeNandPayload { get; set; } = false;
+
+        /// <summary>Si es true, vacía RX antes de cada sesión NAND (cmd 102 inicial).</summary>
+        public static bool DiscardSerialRxBeforeNandSession { get; set; } = true;
+
+        /// <summary>Pausa tras cada partición exitosa antes de la siguiente.</summary>
+        public static int InterPartitionDelayMs { get; set; } = 300;
+
+        /// <summary>Purgar RX entre particiones (tras <see cref="InterPartitionDelayMs"/>).</summary>
+        public static bool DiscardSerialRxBetweenPartitions { get; set; } = true;
+
+        /// <summary>Capa ≥ este valor: limitar tamaño efectivo de paquete NAND.</summary>
+        public static int NandSmallPacketCapaThreshold { get; set; } = 128;
+
+        /// <summary>Tamaño máximo de paquete NAND cuando Capa ≥ <see cref="NandSmallPacketCapaThreshold"/>.</summary>
+        public static int NandPacketBytesWhenHighCapa { get; set; } = 262144;
+
+        /// <summary>Mínimo ms tras cada trozo antes del ACK 8 B en equipos de alta Capa.</summary>
+        public static int FlashAckDelayMsHighCapaMin { get; set; } = 3;
+
+        int? _lastReportedCapa;
+
+        /// <summary>Última «Capa» leída en <see cref="PrintInfo"/> (DVIF) en esta sesión.</summary>
+        public int? LastReportedCapa => _lastReportedCapa;
 
         public Cmd cmd = new Cmd();
         public device Device = new device();
@@ -125,6 +149,7 @@ namespace OdinProtocolAtack
         /// <returns></returns>
         public async Task PrintInfo()
         {
+            _lastReportedCapa = null;
             var info = await DVIF();
             foreach (var item in info)
             {
@@ -134,6 +159,8 @@ namespace OdinProtocolAtack
                         {
                             Log?.Invoke("Capa Number: ", MsgType.Message);
                             Log?.Invoke(item.Value , MsgType.Result);
+                            if (int.TryParse(item.Value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var cap))
+                                _lastReportedCapa = cap;
                             break;
                         }
                     case "product":
@@ -280,6 +307,12 @@ namespace OdinProtocolAtack
             return Result;
         }
        
+        private static string NormalizeTarPath(string filename)
+        {
+            if (string.IsNullOrEmpty(filename)) return "";
+            return filename.Replace('\\', '/').Trim().TrimStart('/');
+        }
+
         private string NormalizeFlashName(string filename)
         {
             if (string.IsNullOrEmpty(filename))
@@ -343,9 +376,12 @@ namespace OdinProtocolAtack
             return null;
         }
 
+        /// <summary>Alinea el tamaño de sesión a múltiplo de 128 KiB (2^17), requerido por LOKE para el comando 102,2.</summary>
         public long Calculate(int sessionLen)
         {
-            return (sessionLen - 1L >> 17) + 1L << 17;
+            const long align = 1L << 17;
+            if (sessionLen <= 0) return 0;
+            return ((sessionLen - 1L) / align + 1L) * align;
         }
 
         private async Task ReadExactlyFromStream(Stream inputStream, byte[] buffer, int count)
@@ -363,6 +399,11 @@ namespace OdinProtocolAtack
         private async Task<bool> SendAsync(TPIT_Entry entry, Stream inputStream,
             int sessionLength, bool isLast, Action<long> addProgressAction, int EfsClear = 0, int BootUpdate = 0)
         {
+            if (DiscardSerialRxBeforeNandSession)
+            {
+                try { await Device.DiscardInBufferAsync(); } catch { }
+            }
+
             SamsungLokeCommand command = new SamsungLokeCommand(102);
             await cmd.LOKE_SendCMD(Device,command);
             command = new SamsungLokeCommand(102, 2, Calculate(sessionLength));
@@ -372,21 +413,25 @@ namespace OdinProtocolAtack
                 await Device.DiscardInBufferAsync();
             }
             int sent = 0;
-            int chunkCap = FlashChunkBytes;
-            if (chunkCap < 131072)
-                chunkCap = 131072;
-            if (chunkCap > 1048576)
-                chunkCap = 1048576;
-            byte[] flashBuffer = new byte[chunkCap];
+            int packet = FlashChunkBytes;
+            if (_lastReportedCapa is int cap && cap >= NandSmallPacketCapaThreshold)
+                packet = Math.Min(packet, NandPacketBytesWhenHighCapa);
+            if (packet < 4096)
+                packet = 4096;
+            if (packet > 1048576)
+                packet = 1048576;
+            byte[] flashBuffer = new byte[packet];
+            int ackDelay = FlashAckDelayMs;
+            if (_lastReportedCapa is int capa && capa >= NandSmallPacketCapaThreshold && FlashAckDelayMsHighCapaMin > 0)
+                ackDelay = Math.Max(ackDelay, FlashAckDelayMsHighCapaMin);
             while (sent < sessionLength)
             {
                 Array.Clear(flashBuffer, 0, flashBuffer.Length);
                 int toRead = Math.Min(flashBuffer.Length, sessionLength - sent);
                 await ReadExactlyFromStream(inputStream, flashBuffer, toRead);
-                int writeLength = (int)Math.Min(flashBuffer.Length, Calculate(toRead));
-                await Device.WritePort(flashBuffer, writeLength);
-                if (FlashAckDelayMs > 0)
-                    await Task.Delay(FlashAckDelayMs);
+                await Device.WritePort(flashBuffer, flashBuffer.Length);
+                if (ackDelay > 0)
+                    await Task.Delay(ackDelay);
                 cmd.ValidateResponse(await Device.ReadPort(8), $"NAND data ACK {entry.MflashFilename} offset {sent}");
                 sent += toRead;
                 addProgressAction(toRead);
@@ -547,6 +592,13 @@ namespace OdinProtocolAtack
                         {
                             Log?.Invoke($" : Ok", MsgType.Result);
                         }
+
+                        if (InterPartitionDelayMs > 0)
+                            await Task.Delay(InterPartitionDelayMs);
+                        if (DiscardSerialRxBetweenPartitions)
+                        {
+                            try { await Device.DiscardInBufferAsync(); } catch { }
+                        }
                     }
 
                 }
@@ -641,12 +693,24 @@ namespace OdinProtocolAtack
             try
             {
                 byte[] pit = new byte[] { };
-                var Extension = Path.GetExtension(File).ToLower();
-                if (Extension == ".tar" || Extension == ".md5")
-                {
+                var Extension = Path.GetExtension(File).ToLowerInvariant();
+                var isTarPack = Extension == ".tar" || Extension == ".md5"
+                    || File.EndsWith(".tar.md5", StringComparison.OrdinalIgnoreCase);
 
+                if (isTarPack)
+                {
                     var TarInfo = tar.TarInformation(File);
-                    var pitname = TarInfo.ToList().Find(item => item.Filename.ToLower().EndsWith(".pit"));
+                    if (TarInfo == null || TarInfo.Count == 0)
+                    {
+                        Result.error = "Cannot open or parse Tar archive.";
+                        return Result;
+                    }
+                    var pitname = TarInfo
+                        .Where(item => NormalizeTarPath(item.Filename).EndsWith(".pit", StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(item => NormalizeTarPath(item.Filename), StringComparer.OrdinalIgnoreCase)
+                        .FirstOrDefault();
+                    if (pitname == null)
+                        pitname = TarInfo.ToList().Find(item => item.Filename != null && item.Filename.ToLowerInvariant().EndsWith(".pit"));
                     if (pitname != null)
                     {
                         pit = await tar.ExtractFileFromTar(File, pitname.Filename);
@@ -664,6 +728,12 @@ namespace OdinProtocolAtack
                 else
                 {
                     Result.error = "Pit Is Invalid";
+                    return Result;
+                }
+
+                if (pit == null || pit.Length < 64)
+                {
+                    Result.error = "PIT vacío o demasiado pequeño.";
                     return Result;
                 }
 
@@ -788,7 +858,10 @@ namespace OdinProtocolAtack
             try
             {
                 var temp1 = tar.TarInformation(Archive);
-                cListFileData TarFileData = temp1.ToList().Find(TarItem => TarItem.Filename == inp_filename);
+                var want = NormalizeTarPath(inp_filename);
+                cListFileData TarFileData = temp1.ToList().Find(TarItem => string.Equals(NormalizeTarPath(TarItem.Filename), want, StringComparison.OrdinalIgnoreCase));
+                if (TarFileData == null)
+                    TarFileData = temp1.ToList().Find(TarItem => string.Equals(TarItem.Filename, inp_filename, StringComparison.OrdinalIgnoreCase));
                 if (TarFileData != null)
                 {
                     using (var reader = new FileStream(Archive, FileMode.Open, FileAccess.Read))
@@ -806,6 +879,23 @@ namespace OdinProtocolAtack
             {
             }
             return lengh;
+        }
+
+        /// <summary>Tamaño descomprimido de un .lz4 suelto (fuera de TAR). Necesario para <see cref="LOKE_Initialize"/>.</summary>
+        public long CalculateLz4DecompressedFileSize(string filePath)
+        {
+            try
+            {
+                using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var lz4 = LZ4Stream.Decode(fs))
+                {
+                    return lz4.Length;
+                }
+            }
+            catch
+            {
+                return 0;
+            }
         }
     }
 }

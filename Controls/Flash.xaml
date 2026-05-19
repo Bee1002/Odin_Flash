@@ -30,7 +30,7 @@
                 </StackPanel>
             </Grid>
 
-            <!-- Cuatro filas compactas: cada fila ajusta su tamaño al contenido -->
+            <!-- Cuatro filas compactas: cada fila ajusta su tamaÃ±o al contenido -->
             <Grid x:Name="Features"
                   Grid.Row="1"
                   Margin="0,0,0,6"

@@ -94,7 +94,10 @@ namespace OdinProtocolAtack
                         await LOKE_SendCMD(device, command);
                     }
 
-                    command = new SamsungLokeCommand(0x64, 2, totalFileSize);
+                    // Paquete LOKE: dword bajo en offset 8, dword alto en 12 (sesión = suma exacta de RawSize).
+                    uint lo = (uint)(totalFileSize & 0xFFFFFFFFL);
+                    int hi = (int)(totalFileSize >> 32);
+                    command = new SamsungLokeCommand(0x64, 2, lo, hi);
                     await LOKE_SendCMD(device, command);
                     if (variant == 4L)
                     {
