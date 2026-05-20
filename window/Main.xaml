@@ -1,260 +1,295 @@
-<ui:FluentWindow x:Class="Odin_Flash.window.Main"
-                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
-                 Loaded="Window_Loaded"
-                 Title="Odin Flash"
-                 Height="550"
-                 Width="900"
-                 MinHeight="450"
-                 MinWidth="800"
-                 WindowStartupLocation="CenterScreen"
-                 ExtendsContentIntoTitleBar="True"
-                 WindowBackdropType="Acrylic"
-                 WindowCornerPreference="Round"
-                 Background="Transparent">
+<Window x:Class="Odin_Flash.window.Main"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        Loaded="Window_Loaded"
+        Title="Odin Flash"
+        Height="550"
+        Width="900"
+        MinHeight="450"
+        MinWidth="800"
+        WindowStartupLocation="CenterScreen"
+        AllowsTransparency="True"
+        WindowStyle="None"
+        Background="Transparent"
+        FontFamily="{materialDesign:MaterialDesignFont}"
+        TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
+        TextElement.FontSize="13">
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
+                <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
 
-        <ui:TitleBar Grid.Row="0"
-                     Title="Odin Flash"
-                     ForceShutdown="True"
-                     ShowMinimize="True"
-                     ShowMaximize="True"
-                     ShowClose="True"
-                     Background="Transparent"
-                     Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                     ButtonsForeground="{DynamicResource TextFillColorPrimaryBrush}"
-                     ButtonsBackground="Transparent">
-            <ui:TitleBar.Header>
-                <StackPanel Orientation="Horizontal"
-                            Margin="10,0,0,0"
-                            VerticalAlignment="Center">
-                    <Border Width="10"
-                            Height="10"
-                            CornerRadius="5"
-                            Background="#0078D4"
-                            Margin="0,0,8,0">
-                        <Border.Effect>
-                            <DropShadowEffect Color="#0078D4"
-                                              BlurRadius="8"
-                                              ShadowDepth="0"
-                                              Opacity="0.65"/>
-                        </Border.Effect>
-                    </Border>
-                    <ui:TextBlock Text="Odin Flash Tool By Xploit"
-                                  FontTypography="Caption"
-                                  Opacity="0.75"/>
-                </StackPanel>
-            </ui:TitleBar.Header>
-        </ui:TitleBar>
+    <Border CornerRadius="12"
+            Background="{DynamicResource ShellBackgroundBrush}"
+            Effect="{StaticResource OdinShellShadow}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-        <Grid Grid.Row="1"
-              Margin="12">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="0.8*"/>
-                <ColumnDefinition Width="1.2*"/>
-            </Grid.ColumnDefinitions>
-
-            <ui:Card Grid.Column="0"
-                     Margin="0,0,6,0"
-                     Padding="0"
-                     Background="#25FFFFFF"
-                     BorderBrush="#10FFFFFF"
-                     BorderThickness="1"
-                     VerticalAlignment="Stretch">
-                <Frame x:Name="FrmMain"
-                       Background="Transparent"
-                       NavigationUIVisibility="Hidden"/>
-            </ui:Card>
-
-            <Grid Grid.Column="1"
-                  Margin="6,0,0,0"
-                  VerticalAlignment="Stretch">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <ui:Card Grid.Row="0"
-                         x:Name="GrpBxLog"
-                         Background="#15000000"
-                         BorderBrush="#10FFFFFF"
-                         BorderThickness="1"
-                         VerticalAlignment="Stretch"
-                         VerticalContentAlignment="Top"
-                         Padding="12">
-                    <Grid VerticalAlignment="Stretch">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-
-                        <Grid Grid.Row="0"
-                              Margin="0,0,0,10">
-                            <StackPanel HorizontalAlignment="Left"
-                                        VerticalAlignment="Top">
-                                <ui:TextBlock Text="LOG OPERATIONS"
-                                              FontTypography="BodyStrong"
-                                              Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
-                                
-                            </StackPanel>
-                            <ui:Button Name="BtnClearRich"
-                                       HorizontalAlignment="Right"
-                                       VerticalAlignment="Top"
-                                       Appearance="Secondary"
-                                       Padding="8,4"
-                                       Click="BtnClearRich_Click"
-                                       Content="Clear">
-                                <ui:Button.Icon>
-                                    <ui:SymbolIcon Symbol="Delete16"/>
-                                </ui:Button.Icon>
-                            </ui:Button>
-                        </Grid>
-
-                        <ui:RichTextBox x:Name="RichLog"
-                                        Grid.Row="1"
-                                        TextChanged="RichLog_TextChanged"
-                                        VerticalAlignment="Stretch"
-                                        Background="Transparent"
-                                        BorderThickness="0"
-                                        IsReadOnly="True"
-                                        Padding="2"
-                                        FontFamily="Cascadia Code, Consolas"
-                                        FontSize="10.5"
-                                        VerticalScrollBarVisibility="Auto">
-                            <ui:RichTextBox.Document>
-                                <FlowDocument PagePadding="0"
-                                              PageWidth="1000"
-                                              AllowDrop="False"/>
-                            </ui:RichTextBox.Document>
-                        </ui:RichTextBox>
-                    </Grid>
-                </ui:Card>
-
-                <Grid Grid.Row="1"
-                      Margin="0,12,0,0"
-                      VerticalAlignment="Bottom">
+            <!-- Barra de título (patrón Ares) -->
+            <Border Grid.Row="0"
+                    Background="{DynamicResource AresTitleBarBrush}"
+                    CornerRadius="12,12,0,0"
+                    BorderBrush="{DynamicResource AresTitleBarAccentBrush}"
+                    BorderThickness="0,0,0,2"
+                    Height="40"
+                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <ui:Button x:Name="BtnFlash"
-                               Grid.Column="0"
-                               Margin="0,0,4,0"
-                               Appearance="Secondary"
-                               Height="40"
-                               HorizontalAlignment="Stretch"
-                               Click="BtnFlash_Click">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="Flash24"/>
-                        </ui:Button.Icon>
-                        <ui:TextBlock Text="Flash"
-                                      VerticalAlignment="Center"/>
-                    </ui:Button>
-
-                    <ui:Button x:Name="BtnReadPit"
-                               Grid.Column="1"
-                               Margin="4,0,0,0"
-                               Appearance="Secondary"
-                               Height="40"
-                               HorizontalAlignment="Stretch"
-                               Click="BtnReadPit_Click">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="DocumentSearch24"/>
-                        </ui:Button.Icon>
-                        <ui:TextBlock Text="Read PIT"
-                                      Margin="6,0,0,0"
-                                      VerticalAlignment="Center"/>
-                    </ui:Button>
-                </Grid>
-            </Grid>
-        </Grid>
-
-        <ui:Card Grid.Row="2"
-                 Margin="12,0,12,12"
-                 Padding="12,10"
-                 Background="#25FFFFFF"
-                 BorderBrush="#10FFFFFF"
-                 BorderThickness="1">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <ProgressBar Grid.Row="0"
-                             Name="ProgBar"
-                             Height="4"
-                             Margin="0,0,0,8"
-                             Value="0"/>
-
-                <Grid Grid.Row="1">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"
-                                          MinWidth="140"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Grid.Column="0"
                                 Orientation="Horizontal"
+                                Margin="14,0,0,0"
                                 VerticalAlignment="Center">
-                        <ui:SymbolIcon Symbol="UsbPlug24"
-                                       Margin="0,0,8,0"
-                                       VerticalAlignment="Center"/>
-                        <ui:TextBlock Name="ConnectedName"
-                                      Text="Disconnected"
-                                      FontTypography="BodyStrong"
-                                      VerticalAlignment="Center"/>
+                        <Border Width="10"
+                                Height="10"
+                                CornerRadius="5"
+                                Background="{DynamicResource AresTitleBarAccentBrush}"
+                                Margin="0,0,8,0">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#00FFC6"
+                                                  BlurRadius="8"
+                                                  ShadowDepth="0"
+                                                  Opacity="0.65"/>
+                            </Border.Effect>
+                        </Border>
+                        <TextBlock Text="Odin Flash Tool By Xploit"
+                                   Opacity="0.85"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
                     </StackPanel>
 
                     <StackPanel Grid.Column="1"
-                                Margin="16,0"
-                                VerticalAlignment="Center">
-                        <ui:TextBlock Name="Events"
-                                      Text="Ready"
-                                      FontTypography="Caption"
-                                      HorizontalAlignment="Center"
-                                      TextTrimming="CharacterEllipsis"/>
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center"
+                                Margin="0,0,6,0">
+                        <Button x:Name="BtnMinimize"
+                                Content="—"
+                                Style="{StaticResource OdinTitleBarButton}"
+                                Click="BtnMinimize_Click"
+                                ToolTip="Minimizar"/>
+                        <Button x:Name="BtnMaximize"
+                                Content="□"
+                                Style="{StaticResource OdinTitleBarButton}"
+                                Click="BtnMaximize_Click"
+                                ToolTip="Maximizar"/>
+                        <Button x:Name="BtnClose"
+                                Content="✕"
+                                Style="{StaticResource OdinTitleBarButton}"
+                                Click="BtnClose_Click"
+                                ToolTip="Cerrar"/>
                     </StackPanel>
+                </Grid>
+            </Border>
 
-                    <TextBlock Grid.Column="2"
-                               Margin="8,0"
-                               MaxWidth="260"
-                               TextTrimming="CharacterEllipsis"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}">
-                        <Hyperlink NavigateUri="https://phone-parts.pages.dev/dashboard"
-                                   RequestNavigate="PhonePartsLink_RequestNavigate">
-                            https://phone-parts.pages.dev/dashboard
-                        </Hyperlink>
-                    </TextBlock>
+            <Grid Grid.Row="1" Margin="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="0.8*"/>
+                    <ColumnDefinition Width="1.2*"/>
+                </Grid.ColumnDefinitions>
 
-                    <ui:Button x:Name="BtnStop"
-                               Grid.Column="3"
-                               Appearance="Danger"
-                               IsEnabled="False"
-                               Padding="14,6"
-                               MinWidth="96"
-                               Click="BtnStop_Click">
-                        <ui:Button.Icon>
-                            <ui:SymbolIcon Symbol="DismissCircle24"/>
-                        </ui:Button.Icon>
-                        <StackPanel Orientation="Horizontal">
-                            <ui:TextBlock Text="STOP"
-                                          VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </ui:Button>
+                <Border Grid.Column="0"
+                        Margin="0,0,6,0"
+                        Style="{StaticResource OdinPanelBorder}"
+                        Padding="0">
+                    <Frame x:Name="FrmMain"
+                           Background="Transparent"
+                           NavigationUIVisibility="Hidden"/>
+                </Border>
+
+                <Grid Grid.Column="1"
+                      Margin="6,0,0,0"
+                      VerticalAlignment="Stretch">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0"
+                            x:Name="GrpBxLog"
+                            Style="{StaticResource OdinPanelBorder}"
+                            Padding="12">
+                        <Grid VerticalAlignment="Stretch">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="LOG OPERATIONS"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                <Button Name="BtnClearRich"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Style="{StaticResource OdinClearOutlinedButton}"
+                                        Padding="8,4"
+                                        Click="BtnClearRich_Click"
+                                        Visibility="Collapsed">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="Delete"
+                                                                 Width="16"
+                                                                 Height="16"
+                                                                 VerticalAlignment="Center"/>
+                                        <TextBlock Text="Clear"
+                                                   Margin="6,0,0,0"
+                                                   VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+
+                            <RichTextBox x:Name="RichLog"
+                                         Grid.Row="1"
+                                         TextChanged="RichLog_TextChanged"
+                                         VerticalAlignment="Stretch"
+                                         VerticalContentAlignment="Top"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         IsReadOnly="True"
+                                         Padding="2"
+                                         FontFamily="Cascadia Code, Consolas"
+                                         FontSize="10.5"
+                                         VerticalScrollBarVisibility="Auto">
+                                <RichTextBox.Document>
+                                    <FlowDocument PagePadding="0"
+                                                  PageWidth="1000"
+                                                  AllowDrop="False"/>
+                                </RichTextBox.Document>
+                            </RichTextBox>
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Row="1"
+                          Margin="0,12,0,0"
+                          VerticalAlignment="Bottom">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Button x:Name="BtnFlash"
+                                Grid.Column="0"
+                                Margin="0,0,4,0"
+                                Height="40"
+                                HorizontalAlignment="Stretch"
+                                Style="{StaticResource OdinSlotFlatButton}"
+                                Click="BtnFlash_Click">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="Flash" Width="22" Height="22" VerticalAlignment="Center"/>
+                                <TextBlock Text="Flash" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="BtnReadPit"
+                                Grid.Column="1"
+                                Margin="4,0,0,0"
+                                Height="40"
+                                HorizontalAlignment="Stretch"
+                                Style="{StaticResource OdinSlotFlatButton}"
+                                Click="BtnReadPit_Click">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="FileSearch" Width="22" Height="22" VerticalAlignment="Center"/>
+                                <TextBlock Text="Read PIT" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
                 </Grid>
             </Grid>
-        </ui:Card>
-    </Grid>
-</ui:FluentWindow>
+
+            <Border Grid.Row="2"
+                    Margin="12,0,12,12"
+                    Padding="12,10"
+                    Style="{StaticResource OdinPanelBorder}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <ProgressBar Grid.Row="0"
+                                 Name="ProgBar"
+                                 Height="4"
+                                 Margin="0,0,0,8"
+                                 Value="0"/>
+
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto" MinWidth="140"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <materialDesign:PackIcon Kind="Usb"
+                                                     Width="22"
+                                                     Height="22"
+                                                     Margin="0,0,8,0"
+                                                     VerticalAlignment="Center"/>
+                            <TextBlock Name="ConnectedName"
+                                       Text="Disconnected"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1"
+                                    Margin="16,0"
+                                    VerticalAlignment="Center">
+                            <TextBlock Name="Events"
+                                       Text="Ready"
+                                       FontSize="12"
+                                       HorizontalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Column="2"
+                                   Margin="8,0"
+                                   MaxWidth="260"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}">
+                            <Hyperlink NavigateUri="https://phone-parts.pages.dev/dashboard"
+                                       RequestNavigate="PhonePartsLink_RequestNavigate">
+                                https://phone-parts.pages.dev/dashboard
+                            </Hyperlink>
+                        </TextBlock>
+
+                        <Button x:Name="BtnStop"
+                                Grid.Column="3"
+                                IsEnabled="False"
+                                Padding="14,6"
+                                MinWidth="96"
+                                Background="{DynamicResource ErrorBrush}"
+                                BorderBrush="{DynamicResource ErrorBrush}"
+                                Style="{StaticResource MaterialDesignRaisedButton}"
+                                Click="BtnStop_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="StopCircle"
+                                                         Width="20"
+                                                         Height="20"
+                                                         VerticalAlignment="Center"/>
+                                <TextBlock Text="STOP"
+                                           Margin="6,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

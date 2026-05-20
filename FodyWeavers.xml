@@ -1,3 +1,13 @@
 <Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
-  <Costura />
+  <Costura>
+    <!-- MD3: DLL sueltas para diseñador VS y distribución ZIP completa. -->
+    <ExcludeAssemblies>
+      MaterialDesignThemes.Wpf
+      MaterialDesignColors
+      Microsoft.Xaml.Behaviors
+      System.Memory
+      System.Runtime.CompilerServices.Unsafe
+      System.Buffers
+    </ExcludeAssemblies>
+  </Costura>
 </Weavers>

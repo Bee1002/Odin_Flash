@@ -5,12 +5,10 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Navigation;
 using System.Windows.Threading;
-using Wpf.Ui.Appearance;
-using Wpf.Ui.Controls;
-using FluentWindow = Wpf.Ui.Controls.FluentWindow;
 using MsgType = OdinFlash.Protocol.util.utils.MsgType;
 
 namespace Odin_Flash.window
@@ -18,20 +16,17 @@ namespace Odin_Flash.window
     /// <summary>
     /// Ventana principal: Flash embebido, log y Stop → Odin.StopOperations.
     /// </summary>
-    public partial class Main : FluentWindow
+    public partial class Main : Window
     {
-
         public Flash Flash;
         private readonly DispatcherTimer DeviceStatusTimer;
         private bool IsCheckingDeviceStatus;
         private bool IsRunningOperation;
         private string LastDetectedComLabel;
+
         public Main()
         {
             InitializeComponent();
-
-            ApplicationThemeManager.Apply(ApplicationTheme.Dark);
-            WindowBackgroundManager.UpdateBackground(this, ApplicationTheme.Dark, WindowBackdropType.Acrylic);
 
             Flash = new Flash();
             Flash.Log += Flash_Log;
@@ -45,6 +40,31 @@ namespace Odin_Flash.window
             };
             DeviceStatusTimer.Tick += DeviceStatusTimer_Tick;
             DeviceStatusTimer.Start();
+        }
+
+        private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                ToggleMaximize();
+                return;
+            }
+
+            if (e.LeftButton == MouseButtonState.Pressed)
+                DragMove();
+        }
+
+        private void BtnMinimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+        private void BtnMaximize_Click(object sender, RoutedEventArgs e) => ToggleMaximize();
+
+        private void BtnClose_Click(object sender, RoutedEventArgs e) => Close();
+
+        private void ToggleMaximize()
+        {
+            WindowState = WindowState == WindowState.Maximized
+                ? WindowState.Normal
+                : WindowState.Maximized;
         }
 
         private void Flash_IsRunning(bool IsRunning, string process)
@@ -87,7 +107,8 @@ namespace Odin_Flash.window
 
         private void Flash_ProgressChanged(string filename, long max, long value, long WritenSize)
         {
-            Application.Current.Dispatcher.Invoke(() => {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
                 ProgBar.Maximum = max;
                 ProgBar.Value = value;
                 Events.Text = $"{filename} | {WritenSize:###,###,###}";
@@ -104,29 +125,21 @@ namespace Odin_Flash.window
             {
                 UpdateDeviceStatusFromLog(Text, IsError);
 
-                Paragraph paragraph = new Paragraph { Margin = new Thickness(0) };
-                Run run = new Run(Text)
-                {
-                    FontSize = 10.5
-                };
+                var paragraph = new Paragraph { Margin = new Thickness(0) };
+                var run = new Run(Text) { FontSize = 10.5 };
 
                 if (IsError)
-                {
                     run.Foreground = Brushes.YellowGreen;
-                }
                 else if (Color == MsgType.Result)
                 {
                     run.Foreground = Brushes.Cyan;
                     run.FontWeight = FontWeights.Bold;
                 }
                 else
-                {
                     run.Foreground = (SolidColorBrush)new BrushConverter().ConvertFrom("#A0A0A0");
-                }
 
                 paragraph.Inlines.Add(run);
                 RichLog.Document.Blocks.Add(paragraph);
-
                 RichLog.ScrollToEnd();
             });
         }
@@ -189,14 +202,9 @@ namespace Odin_Flash.window
 
         private void RichLog_TextChanged(object sender, TextChangedEventArgs e)
         {
-            if (RichLog.Document.Blocks.Count == 0)
-            {
-                BtnClearRich.Visibility = Visibility.Collapsed;
-            }
-            else
-            {
-                BtnClearRich.Visibility = Visibility.Visible;
-            }
+            BtnClearRich.Visibility = RichLog.Document.Blocks.Count == 0
+                ? Visibility.Collapsed
+                : Visibility.Visible;
         }
 
         private void BtnClearRich_Click(object sender, RoutedEventArgs e)
@@ -221,10 +229,7 @@ namespace Odin_Flash.window
 
         private void PhonePartsLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
         {
-            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri)
-            {
-                UseShellExecute = true
-            });
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
             e.Handled = true;
         }
 
@@ -234,6 +239,5 @@ namespace Odin_Flash.window
             Flash_Log("Odin Flash 1.0.1", MsgType.Message);
             Flash_Log("------------------------------------", MsgType.Message);
         }
-
     }
 }

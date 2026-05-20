@@ -1,13 +1,13 @@
 <Application x:Class="Odin_Flash.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:Odin_Flash"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              StartupUri="/window/Main.xaml">
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="pack://application:,,,/Wpf.Ui;component/Resources/Theme/Dark.xaml"/>
-                <ResourceDictionary Source="pack://application:,,,/Wpf.Ui;component/Resources/Wpf.Ui.xaml"/>
+                <materialDesign:BundledTheme BaseTheme="Dark" PrimaryColor="Teal" SecondaryColor="Cyan" />
+                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
                 <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>

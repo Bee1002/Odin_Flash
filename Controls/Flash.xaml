@@ -3,12 +3,19 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-             xmlns:local="clr-namespace:Odin_Flash.Controls"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              mc:Ignorable="d"
              TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
              Background="Transparent"
              d:DesignWidth="500">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
+                <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
     <Grid Background="Transparent">
         <Grid Margin="2">
             <Grid.RowDefinitions>
@@ -18,18 +25,12 @@
             </Grid.RowDefinitions>
 
             <Grid Grid.Row="0" Margin="0,0,0,4">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                    <ui:TextBlock Text="Firmware"
-                                  FontTypography="Subtitle"
-                                  Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
-                </StackPanel>
+                <TextBlock Text="Firmware"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
             </Grid>
 
-            <!-- Cuatro filas compactas: cada fila ajusta su tamaño al contenido -->
             <Grid x:Name="Features"
                   Grid.Row="1"
                   Margin="0,0,0,6"
@@ -48,11 +49,9 @@
                       Margin="0,0,0,6"
                       IsExpanded="False">
                 <StackPanel Margin="0,6,0,0">
-                    <ui:Card Background="{DynamicResource AresCardBrush}"
-                             BorderBrush="{DynamicResource AresSoftBorderBrush}"
-                             BorderThickness="1"
-                             Padding="8"
-                             Margin="0,0,0,4">
+                    <Border Style="{StaticResource OdinPanelBorder}"
+                            Padding="8"
+                            Margin="0,0,0,4">
                         <Grid x:Name="Pit">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="auto"/>
@@ -60,66 +59,66 @@
                                 <ColumnDefinition Width="auto"/>
                                 <ColumnDefinition Width="auto"/>
                             </Grid.ColumnDefinitions>
-                            <ui:TextBlock Grid.Column="0"
-                                          Text="PIT"
-                                          FontTypography="BodyStrong"
-                                          Foreground="{DynamicResource SecondaryHueLightBrush}"
-                                          VerticalAlignment="Center"
-                                          Margin="0,0,10,0"/>
-                            <ui:TextBox Grid.Column="1"
-                                        Text=""
-                                        IsReadOnly="True"
-                                        VerticalAlignment="Center"
-                                        Margin="0,0,8,0"
-                                        AcceptsReturn="False"
-                                        Name="TxtBxPit"
-                                        TextChanged="TxtBxPit_TextChanged"
-                                        ToolTip="PIT File"/>
-                            <ui:Button x:Name="BtnClearPit"
-                                       Appearance="Secondary"
-                                       Click="BtnClearPit_Click"
-                                       Margin="0,0,6,0"
-                                       Grid.Column="2"
-                                       Content="Clear"
-                                       MinWidth="58">
-                                <ui:Button.Icon>
-                                    <ui:SymbolIcon Symbol="Delete16"/>
-                                </ui:Button.Icon>
-                            </ui:Button>
-                            <ui:Button x:Name="BtnChoosePit"
-                                       Appearance="Secondary"
-                                       Click="BtnChoosePit_Click"
-                                       Grid.Column="3"
-                                       Content="Load PIT"
-                                       MinWidth="82">
-                                <ui:Button.Icon>
-                                    <ui:SymbolIcon Symbol="DocumentAdd20"/>
-                                </ui:Button.Icon>
-                            </ui:Button>
+                            <TextBlock Grid.Column="0"
+                                       Text="PIT"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource SecondaryHueLightBrush}"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,0"/>
+                            <TextBox Grid.Column="1"
+                                     IsReadOnly="True"
+                                     VerticalAlignment="Center"
+                                     Margin="0,0,8,0"
+                                     Name="TxtBxPit"
+                                     TextChanged="TxtBxPit_TextChanged"
+                                     ToolTip="PIT File"/>
+                            <Button x:Name="BtnClearPit"
+                                    Style="{StaticResource OdinClearOutlinedButton}"
+                                    Click="BtnClearPit_Click"
+                                    Margin="0,0,6,0"
+                                    Grid.Column="2"
+                                    MinWidth="58"
+                                    Padding="8,4">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="Delete" Width="16" Height="16" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Clear" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="BtnChoosePit"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Click="BtnChoosePit_Click"
+                                    Grid.Column="3"
+                                    MinWidth="82"
+                                    Padding="8,4">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="FilePlus" Width="16" Height="16" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Load PIT" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
                         </Grid>
-                    </ui:Card>
-                    <ui:Card Background="{DynamicResource AresCardBrush}"
-                             BorderBrush="{DynamicResource AresSoftBorderBrush}"
-                             BorderThickness="1"
-                             Padding="8">
+                    </Border>
+                    <Border Style="{StaticResource OdinPanelBorder}" Padding="8">
                         <WrapPanel Orientation="Horizontal">
-                            <ui:ToggleSwitch Content="Auto reboot"
-                                             Name="AutoBoot"
-                                             Margin="6"
-                                             IsChecked="True"/>
-                            <ui:ToggleSwitch Name="RepartitionCheckBx"
-                                             Content="Repartition"
-                                             Margin="6"
-                                             IsChecked="False"
-                                             Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
-                            <ui:ToggleSwitch Content="Update boot"
-                                             x:Name="BootUpdate"
-                                             Margin="6"/>
-                            <ui:ToggleSwitch Content="Clear EFS"
-                                             x:Name="EfsClear"
-                                             Margin="6"/>
+                            <ToggleButton Content="Auto reboot"
+                                          Name="AutoBoot"
+                                          Margin="6"
+                                          IsChecked="True"
+                                          Style="{StaticResource MaterialDesignSwitchToggleButton}"/>
+                            <ToggleButton Name="RepartitionCheckBx"
+                                          Content="Repartition"
+                                          Margin="6"
+                                          IsChecked="False"
+                                          Style="{StaticResource MaterialDesignSwitchToggleButton}"/>
+                            <ToggleButton Content="Update boot"
+                                          x:Name="BootUpdate"
+                                          Margin="6"
+                                          Style="{StaticResource MaterialDesignSwitchToggleButton}"/>
+                            <ToggleButton Content="Clear EFS"
+                                          x:Name="EfsClear"
+                                          Margin="6"
+                                          Style="{StaticResource MaterialDesignSwitchToggleButton}"/>
                         </WrapPanel>
-                    </ui:Card>
+                    </Border>
                 </StackPanel>
             </Expander>
         </Grid>

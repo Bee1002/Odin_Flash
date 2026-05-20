@@ -8,6 +8,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Media;
 
 namespace Odin_Flash.Controls
 {
@@ -48,7 +49,22 @@ namespace Odin_Flash.Controls
             BtnChooseFile.Content = PackageSlot;
             // Placeholder reducido a solo el slot (ej. "BL")
             txtSelectTeam.Text = PackageSlot;
+            if (IsKnownSlot(PackageSlot))
+                ApplySlotAccent("SlotAccentBrush");
             view.Refresh();
+        }
+
+        private static bool IsKnownSlot(string slot)
+        {
+            return slot == "BL" || slot == "AP" || slot == "CP" || slot == "CSC";
+        }
+
+        private void ApplySlotAccent(string brushKey)
+        {
+            var accent = (Brush)FindResource(brushKey);
+            txtSelectTeam.Foreground = accent;
+            BtnChooseFile.Foreground = accent;
+            BtnChooseFile.BorderBrush = accent;
         }
 
         private static string GetPackageSlot(string package)
