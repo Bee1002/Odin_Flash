@@ -5,9 +5,16 @@ using System.Threading.Tasks;
 
 namespace OdinFlash.Protocol
 {
+    /// <summary>
+    /// LOKE por COM. Cuidado: 0x64 == 100 decimal — el layout del paquete en <see cref="GetCmdBuff"/> define
+    /// si la barra del teléfono recibe el total correcto (AP &gt;4 GiB necesita hi dword en +12).
+    /// </summary>
     public class Cmd
     {
         public byte[] BufferRead = new byte[8];
+
+        /// <summary>Variante LOKE detectada en la última inicialización (2–5).</summary>
+        public long LokeVariant { get; private set; }
 
         private long GetVariant(byte[] responseBuff)
         {
@@ -19,7 +26,14 @@ namespace OdinFlash.Protocol
             byte[] array = new byte[1024];
             Array.Copy(BitConverter.GetBytes(loke.Cmd), 0, array, 0, 4);
             Array.Copy(BitConverter.GetBytes(loke.SeqCmd), 0, array, 4, 4);
-            if (loke.Cmd == 100)
+
+            // CRÍTICO barra teléfono: 0x64 (100 dec) seq 2/5 = lo@+8, hi@+12. No usar solo BinaryType 8 bytes (rompe >4 GiB).
+            if (loke.Cmd == 0x64 && (loke.SeqCmd == 2 || loke.SeqCmd == 5))
+            {
+                Array.Copy(BitConverter.GetBytes((int)loke.BinaryType), 0, array, 8, 4);
+                Array.Copy(BitConverter.GetBytes(loke.SizeWritten), 0, array, 12, 4);
+            }
+            else if (loke.Cmd == 0x64)
             {
                 Array.Copy(BitConverter.GetBytes(loke.BinaryType), 0, array, 8, 8);
             }
@@ -28,6 +42,7 @@ namespace OdinFlash.Protocol
                 Array.Copy(BitConverter.GetBytes((int)loke.BinaryType), 0, array, 8, 4);
                 Array.Copy(BitConverter.GetBytes(loke.SizeWritten), 0, array, 12, 4);
             }
+
             Array.Copy(BitConverter.GetBytes(loke.Unknown), 0, array, 16, 4);
             Array.Copy(BitConverter.GetBytes(loke.DeviceId), 0, array, 20, 4);
             Array.Copy(BitConverter.GetBytes(loke.Identifier), 0, array, 24, 4);
@@ -74,46 +89,58 @@ namespace OdinFlash.Protocol
             SamsungLokeCommand command = new SamsungLokeCommand(0x64, 0, 5L);
             if (await LOKE_SendCMD(device, command))
             {
-                long variant = GetVariant(BufferRead);
-                if (variant == 5L)
+                LokeVariant = GetVariant(BufferRead);
+                if (LokeVariant == 5L)
                 {
                     command = new SamsungLokeCommand(0x64, 12);
-                    await LOKE_SendCMD( device, command, false);
+                    await LOKE_SendCMD(device, command, false);
                 }
 
                 if (totalFileSize != 0)
-                {
-                    if (variant == 2L)
-                    {
-                        command = new SamsungLokeCommand(0x64, 2);
-                        await LOKE_SendCMD(device,command);
-                    }
-                    if (variant == 3L || variant == 4L || variant == 5L)
-                    {
-                        command = new SamsungLokeCommand(0x64, 5, 1048576L);
-                        await LOKE_SendCMD(device, command);
-                    }
-
-                    // Paquete LOKE: dword bajo en offset 8, dword alto en 12 (sesión = suma exacta de RawSize).
-                    uint lo = (uint)(totalFileSize & 0xFFFFFFFFL);
-                    int hi = (int)(totalFileSize >> 32);
-                    command = new SamsungLokeCommand(0x64, 2, lo, hi);
-                    await LOKE_SendCMD(device, command);
-                    if (variant == 4L)
-                    {
-                        int i = 0;
-                        while (i < 3)
-                        {
-                            command = new SamsungLokeCommand(0x69, i);
-                            await LOKE_SendCMD(device, command);
-                            int num = i + 1;
-                            i = num;
-                        }
-                    }
-
-                }
-
+                    return await LOKE_SetFlashTotal(device, totalFileSize);
             }
+            return true;
+        }
+
+        /// <summary>
+        /// cmd 0x64/0x02 — total del lote para la barra blanca en Download Mode.
+        /// Debe coincidir con Calculated Size (BL+AP+CP+CSC), no solo con el subconjunto PIT.
+        /// Ref. Thor_Flash SetTotalBytes / Heimdall PR #459.
+        /// </summary>
+        public async Task<bool> LOKE_SetFlashTotal(device device, long totalFileSize)
+        {
+            if (totalFileSize <= 0)
+                return true;
+
+            SamsungLokeCommand command;
+            if (LokeVariant == 2L)
+            {
+                command = new SamsungLokeCommand(0x64, 2);
+                await LOKE_SendCMD(device, command);
+            }
+
+            if (LokeVariant == 3L || LokeVariant == 4L || LokeVariant == 5L)
+            {
+                command = new SamsungLokeCommand(0x64, 5, 1048576L);
+                await LOKE_SendCMD(device, command);
+            }
+
+            uint lo = (uint)(totalFileSize & 0xFFFFFFFFL);
+            int hi = (int)(totalFileSize >> 32); // Obligatorio si total > 4 GiB (ej. AP ~8 GB)
+            command = new SamsungLokeCommand(0x64, 2, lo, hi);
+            await LOKE_SendCMD(device, command);
+
+            if (LokeVariant == 4L)
+            {
+                int i = 0;
+                while (i < 3)
+                {
+                    command = new SamsungLokeCommand(0x69, i);
+                    await LOKE_SendCMD(device, command);
+                    i++;
+                }
+            }
+
             return true;
         }
 

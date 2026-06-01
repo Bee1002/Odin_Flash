@@ -6,14 +6,6 @@
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              mc:Ignorable="d"
              VerticalAlignment="Stretch">
-    <UserControl.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
-                <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </UserControl.Resources>
     <Border Style="{StaticResource OdinPanelBorder}"
             Padding="6,4"
             Margin="0,0,0,2"
@@ -27,7 +19,6 @@
             <Grid Grid.Column="0">
                 <ComboBox SelectionChanged="CmbBxListFile_SelectionChanged"
                           Name="CmbBxListFile"
-                          SelectedValue="{Binding FilePath}"
                           Margin="0,0,6,0"
                           MinHeight="28"
                           VerticalContentAlignment="Center"
@@ -79,7 +70,11 @@
                     Padding="10,4">
                 <StackPanel Orientation="Horizontal">
                     <materialDesign:PackIcon Kind="FolderOpen" Width="16" Height="16" VerticalAlignment="Center"/>
-                    <TextBlock Text="Browse" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="TxtBrowseSlot"
+                               Text="BL"
+                               Margin="6,0,0,0"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold"/>
                 </StackPanel>
             </Button>
         </Grid>

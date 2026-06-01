@@ -4,7 +4,7 @@
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         Loaded="Window_Loaded"
         Title="Odin Flash"
-        Height="550"
+        Height="580"
         Width="900"
         MinHeight="450"
         MinWidth="800"
@@ -15,15 +15,6 @@
         FontFamily="{materialDesign:MaterialDesignFont}"
         TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
         TextElement.FontSize="13">
-
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
-                <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
 
     <Border CornerRadius="12"
             Background="{DynamicResource ShellBackgroundBrush}"
@@ -216,20 +207,105 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <ProgressBar Grid.Row="0"
-                                 Name="ProgBar"
-                                 Height="4"
-                                 Margin="0,0,0,8"
-                                 Value="0"/>
+                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                    <Grid Grid.Row="1">
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <Grid Height="18" Margin="0,0,0,4">
+                                <ProgressBar x:Name="ProgBarPartition"
+                                             Style="{StaticResource OdinFlashProgressBar}"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="0"/>
+                                <TextBlock x:Name="TxtPartitionPercent"
+                                           Text="0%"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontSize="11"
+                                           FontWeight="SemiBold"
+                                           Foreground="White"/>
+                            </Grid>
+                            <Grid Height="22">
+                                <ProgressBar x:Name="ProgBarBatch"
+                                             Style="{StaticResource OdinFlashProgressBar}"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="0"/>
+                                <TextBlock x:Name="TxtBatchPercent"
+                                           Text="0%"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Foreground="White"/>
+                            </Grid>
+                        </StackPanel>
+
+                        <Button x:Name="BtnStop"
+                                Grid.Column="1"
+                                IsEnabled="False"
+                                Padding="14,6"
+                                MinWidth="96"
+                                VerticalAlignment="Stretch"
+                                Background="{DynamicResource ErrorBrush}"
+                                BorderBrush="{DynamicResource ErrorBrush}"
+                                Style="{StaticResource MaterialDesignRaisedButton}"
+                                Click="BtnStop_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="StopCircle"
+                                                         Width="20"
+                                                         Height="20"
+                                                         VerticalAlignment="Center"/>
+                                <TextBlock Text="Stop"
+                                           Margin="6,0,0,0"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock x:Name="TxtTotalSize"
+                                   Grid.Column="0"
+                                   Text="Total Size : 0 B"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtWrittenSize"
+                                   Grid.Column="1"
+                                   Text="Written Size : 0 B"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtTransferRate"
+                                   Grid.Column="2"
+                                   Text="Transfer Rate : 0 B/s"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto" MinWidth="140"/>
-                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0"
@@ -267,26 +343,6 @@
                                 https://phone-parts.pages.dev/dashboard
                             </Hyperlink>
                         </TextBlock>
-
-                        <Button x:Name="BtnStop"
-                                Grid.Column="3"
-                                IsEnabled="False"
-                                Padding="14,6"
-                                MinWidth="96"
-                                Background="{DynamicResource ErrorBrush}"
-                                BorderBrush="{DynamicResource ErrorBrush}"
-                                Style="{StaticResource MaterialDesignRaisedButton}"
-                                Click="BtnStop_Click">
-                            <StackPanel Orientation="Horizontal">
-                                <materialDesign:PackIcon Kind="StopCircle"
-                                                         Width="20"
-                                                         Height="20"
-                                                         VerticalAlignment="Center"/>
-                                <TextBlock Text="STOP"
-                                           Margin="6,0,0,0"
-                                           VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
                     </Grid>
                 </Grid>
             </Border>

@@ -45,9 +45,7 @@ namespace Odin_Flash.Controls
             CmbBxListFile.ItemsSource = view;
             BtnClear.Visibility = Visibility.Collapsed;
 
-            // Mostrar solo el icono de carpeta (ya definido en XAML) y el texto corto del slot (ej. "BL")
-            BtnChooseFile.Content = PackageSlot;
-            // Placeholder reducido a solo el slot (ej. "BL")
+            TxtBrowseSlot.Text = PackageSlot;
             txtSelectTeam.Text = PackageSlot;
             if (IsKnownSlot(PackageSlot))
                 ApplySlotAccent("SlotAccentBrush");
@@ -145,13 +143,27 @@ namespace Odin_Flash.Controls
 
                             if (Extension == ".lz4")
                             {
-                                file.RawSize = odin.CalculateLz4SizeFromTar(filename, Tiem.Filename);
+                                try
+                                {
+                                    file.RawSize = odin.GetTarEntryFlashBytes(filename, Tiem.Filename);
+                                }
+                                catch
+                                {
+                                    file.RawSize = odin.CalculateLz4SizeFromTar(filename, Tiem.Filename);
+                                }
                                 if (file.RawSize <= 0)
                                     continue;
                             }
                             else
                             {
-                                file.RawSize = Tiem.Filesize;
+                                try
+                                {
+                                    file.RawSize = odin.GetTarEntryFlashBytes(filename, Tiem.Filename);
+                                }
+                                catch
+                                {
+                                    file.RawSize = Tiem.Filesize;
+                                }
                             }
                             FlashFile.Add(file);
                         }

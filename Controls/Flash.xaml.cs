@@ -3,6 +3,7 @@ using Microsoft.Win32;
 using OdinFlash.Protocol;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
@@ -22,6 +23,7 @@ namespace Odin_Flash.Controls
         public event ProgressChangedDelegate ProgressChanged;
         public event LogDelegate Log;
         public event IsRunningProcessDelegate IsRunning;
+        public event FlashCompletedDelegate FlashCompleted;
 
         public Flash()
         {
@@ -61,9 +63,15 @@ namespace Odin_Flash.Controls
             Log?.Invoke(Text, Color, IsError);
         }
 
-        private void Odin_ProgressChanged(string filename, long max, long value, long WritenSize)
+        private void Odin_ProgressChanged(
+            string filename,
+            long partitionMax,
+            long partitionValue,
+            long writtenSize,
+            long batchTotal,
+            long batchWritten)
         {
-            ProgressChanged?.Invoke(filename, max, value, WritenSize);
+            ProgressChanged?.Invoke(filename, partitionMax, partitionValue, writtenSize, batchTotal, batchWritten);
         }
 
         private void BtnChoosePit_Click(object sender, RoutedEventArgs e)
@@ -144,8 +152,8 @@ namespace Odin_Flash.Controls
             }
         }
 
-        /// <summary>Flujo completo: puerto download → init LOKE → PIT → firmware → reboot opcional.</summary>
-        public async Task DoFlash(long Size, List<FileFlash> ListFlash)
+        /// <summary>Flujo: conectar → LOKE init (variante) → PIT → SetFlashTotal una vez → flash plan PIT.</summary>
+        public async Task<bool> DoFlash(List<FileFlash> ListFlash)
         {
             var list = new List<OdinFlash.Protocol.structs.FileFlash>();
             foreach (var i in ListFlash)
@@ -163,23 +171,28 @@ namespace Odin_Flash.Controls
             {
                 Log?.Invoke("Download Mode Port : ", MsgType.Message);
                 Log?.Invoke("Not found", MsgType.Result, true);
-                return;
+                return false;
             }
 
             await Odin.PrintInfo();
+            LokePerformanceSettings.ApplyHighCapaRuntimeProfile(Odin.LastReportedCapa);
             Log?.Invoke("Checking Download Mode : ", MsgType.Message);
             if (!await Odin.IsOdin())
             {
                 Log?.Invoke("Failed - LOKE handshake not detected", MsgType.Result, true);
-                return;
+                return false;
             }
 
             Log?.Invoke("ODIN", MsgType.Result);
+
+            // Sesión LOKE sin total; SetFlashTotal una sola vez tras PIT (evita doble 0x64/0x02 en variantes 4/5).
+            long phoneTotal = 0L;
+
             Log?.Invoke($"Initializing Device : ", MsgType.Message);
-            if (!await Odin.LOKE_Initialize(Size))
+            if (!await Odin.LOKE_Initialize(0))
             {
                 Log?.Invoke("Failed - LOKE initialize rejected", MsgType.Result, true);
-                return;
+                return false;
             }
 
             Log?.Invoke("Initialized", MsgType.Result);
@@ -193,7 +206,7 @@ namespace Odin_Flash.Controls
                 else
                 {
                     Log?.Invoke(string.IsNullOrEmpty(Repartition.error) ? "Failed - PIT write rejected" : Repartition.error, MsgType.Result, true);
-                    return;
+                    return false;
                 }
             }
 
@@ -202,16 +215,41 @@ namespace Odin_Flash.Controls
             if (!GetPit.Result)
             {
                 Log?.Invoke(string.IsNullOrEmpty(GetPit.error) ? "Failed - invalid PIT response" : GetPit.error, MsgType.Result, true);
-                return;
+                return false;
             }
 
             Log?.Invoke("Ok", MsgType.Result);
+
+            var flashPlan = Odin.BuildFlashPlan(list, GetPit.Pit);
+            if (list.Count > 0 && flashPlan.Count == 0)
+            {
+                Log?.Invoke("No matching partitions found for selected firmware", MsgType.Result, true);
+                return false;
+            }
+
+            if (list.Count > 0)
+            {
+                Log?.Invoke($"Flash images matched : {flashPlan.Count}", MsgType.Message);
+                phoneTotal = Odin.CalculatePhoneProgressTotalBytes(list, GetPit.Pit);
+                Odin.SetPhoneSessionTotalBytes(phoneTotal);
+                Log?.Invoke("LOKE session total : ", MsgType.Message);
+                Log?.Invoke(Util.Util.FormatCalculatedSizeGbOdin(phoneTotal), MsgType.Result);
+                if (phoneTotal > 0 && !await Odin.InitializeFlashTotal(phoneTotal))
+                {
+                    Log?.Invoke("Failed - LOKE total size rejected", MsgType.Result, true);
+                    return false;
+                }
+            }
+
             var EfsClearInt = 0;
             var BootUpdateInt = 0;
             if (EfsClear.IsChecked == true)
                 EfsClearInt++;
             if (BootUpdate.IsChecked == true)
                 BootUpdateInt++;
+
+            if (list.Count == 0)
+                return false;
 
             if (await Odin.FlashFirmware(list, GetPit.Pit, EfsClearInt, BootUpdateInt, true))
             {
@@ -221,18 +259,18 @@ namespace Odin_Flash.Controls
                     if (await Odin.PDAToNormal())
                     {
                         Log?.Invoke("Ok", MsgType.Result);
-                        LogGoodJob();
                     }
                     else
                         Log?.Invoke("Failed", MsgType.Result, true);
                 }
                 else
                     Log?.Invoke("Auto Reboot Disabled Try Manual", MsgType.Message);
+
+                return true;
             }
-            else
-            {
-                Log?.Invoke("Flash Failed - Some partitions were not written", MsgType.Result, true);
-            }
+
+            Log?.Invoke("Flash Failed - Some partitions were not written", MsgType.Result, true);
+            return false;
         }
 
         private void LogGoodJob()
@@ -242,6 +280,8 @@ namespace Odin_Flash.Controls
 
         public async void BtnFlash_Click(object sender, RoutedEventArgs e)
         {
+            var flashStopwatch = Stopwatch.StartNew();
+            var flashSucceeded = false;
             try
             {
                 IsRunning?.Invoke(true, "Flash");
@@ -252,25 +292,41 @@ namespace Odin_Flash.Controls
                 ListFlash.AddRange(CSCPackage.Files);
                 if (ListFlash.Count > 0)
                 {
-                    Log?.Invoke("Calculated Size : ", MsgType.Message);
-                    long Size = 0L;
-                    foreach (var item in ListFlash)
-                        Size += item.RawSize;
-
-                    if (Size > 0)
+                    var protoList = new List<OdinFlash.Protocol.structs.FileFlash>();
+                    foreach (var i in ListFlash)
                     {
-                        Log?.Invoke(Util.Util.GetBytesReadable(Size), MsgType.Result);
-                        await DoFlash(Size, ListFlash);
+                        protoList.Add(new OdinFlash.Protocol.structs.FileFlash
+                        {
+                            Enable = i.Enable,
+                            FileName = i.FileName,
+                            FilePath = i.FilePath,
+                            RawSize = i.RawSize
+                        });
+                    }
+
+                    var phoneTotal = Odin.CalculatePackagePhoneTotalBytes(protoList);
+                    Log?.Invoke("Calculated Size : ", MsgType.Message);
+                    if (phoneTotal > 0)
+                    {
+                        Log?.Invoke(Util.Util.FormatCalculatedSizeGbOdin(phoneTotal), MsgType.Result);
+                        ProgressChanged?.Invoke(string.Empty, 0, 0, 0, phoneTotal, 0);
+                        flashSucceeded = await DoFlash(ListFlash);
                     }
                     else
                         Log?.Invoke("Failed", MsgType.Result, true);
                 }
                 else if (!string.IsNullOrEmpty(TxtBxPit.Text) && RepartitionCheckBx.IsChecked == true)
                 {
-                    await DoFlash(0, ListFlash);
+                    flashSucceeded = await DoFlash(ListFlash);
                 }
                 else
                     Log?.Invoke("Please Select Firmware Package and try again", MsgType.Message);
+
+                if (flashSucceeded)
+                {
+                    FlashCompleted?.Invoke(flashStopwatch.Elapsed);
+                    LogGoodJob();
+                }
             }
             catch (Exception ee)
             {
@@ -299,6 +355,8 @@ namespace Odin_Flash.Controls
 
         public async void BtnReadPit_Click(object sender, RoutedEventArgs e)
         {
+            var readPitStopwatch = Stopwatch.StartNew();
+            var readPitSucceeded = false;
             try
             {
                 if (!await Odin.FindAndSetDownloadMode())
@@ -350,6 +408,8 @@ namespace Odin_Flash.Controls
                 }
                 else
                     Log?.Invoke("Auto Reboot Disabled Try Manual", MsgType.Message);
+
+                readPitSucceeded = true;
             }
             catch (Exception ee)
             {
@@ -358,6 +418,8 @@ namespace Odin_Flash.Controls
             }
             finally
             {
+                if (readPitSucceeded)
+                    FlashCompleted?.Invoke(readPitStopwatch.Elapsed);
                 IsRunning?.Invoke(false, "ReadPit");
             }
         }

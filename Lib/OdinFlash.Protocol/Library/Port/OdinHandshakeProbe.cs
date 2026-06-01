@@ -103,8 +103,8 @@ namespace OdinFlash.Protocol.Port
                 Handshake = device.SerialHandshake,
                 ReadTimeout = 1500,
                 WriteTimeout = 1000,
-                ReadBufferSize = 4096,
-                WriteBufferSize = 4096,
+                ReadBufferSize = device.SerialReadBufferSize,
+                WriteBufferSize = device.SerialWriteBufferSize,
                 DtrEnable = false
             };
             SetRtsIfManual(port, false);

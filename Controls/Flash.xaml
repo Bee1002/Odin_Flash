@@ -8,14 +8,6 @@
              TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
              Background="Transparent"
              d:DesignWidth="500">
-    <UserControl.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Res/theme/MaterialDesignResources.xaml"/>
-                <ResourceDictionary Source="/Res/theme/LightTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </UserControl.Resources>
     <Grid Background="Transparent">
         <Grid Margin="2">
             <Grid.RowDefinitions>

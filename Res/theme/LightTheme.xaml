@@ -168,9 +168,11 @@
         <Setter Property="Padding" Value="8"/>
     </Style>
 
-    <Style TargetType="ProgressBar">
-        <Setter Property="Foreground" Value="{StaticResource SecondaryHueLightBrush}"/>
+    <Style x:Key="OdinFlashProgressBar" TargetType="ProgressBar">
+        <Setter Property="Foreground" Value="{StaticResource ActionBlueBrush}"/>
         <Setter Property="Background" Value="#332196F3"/>
-        <Setter Property="Height" Value="10"/>
+        <Setter Property="BorderThickness" Value="0"/>
     </Style>
+
+    <Style TargetType="ProgressBar" BasedOn="{StaticResource OdinFlashProgressBar}"/>
 </ResourceDictionary>

@@ -18,17 +18,23 @@ namespace OdinFlash.Protocol.Port
         /// <summary>Candado: serializar lecturas/escrituras (antes mezclaban Task.Run y Port.Read directo en Cmd).</summary>
         private readonly SemaphoreSlim _serialIo = new SemaphoreSlim(1, 1);
 
-        /// <summary>USB Samsung: muchos equipos van bien con RTS; si hay timeouts en handshake, prueba <see cref="Handshake.None"/>.</summary>
+        /// <summary>USB Samsung (App.config Serial:Handshake). Default código: RequestToSend; si hay timeouts en handshake, prueba None.</summary>
         public static Handshake SerialHandshake { get; set; } = Handshake.RequestToSend;
 
-        /// <summary>Delay tras bajar DTR/RTS antes de subirlos (misma idea que escaneo Odin).</summary>
+        /// <summary>Delay tras bajar DTR/RTS (App.config Serial:WakeToggleLowMs).</summary>
         public static int WakeToggleLowMs { get; set; } = 100;
 
-        /// <summary>Delay tras subir DTR/RTS antes de purgar buffers RX/TX.</summary>
+        /// <summary>Delay tras subir DTR/RTS antes de purgar (App.config Serial:WakeAfterLinesHighMs).</summary>
         public static int WakeAfterLinesHighMs { get; set; } = 500;
 
-        /// <summary>Tras enviar magic ODIN: espera antes de <see cref="SerialPort.ReadExisting"/> (<see cref="Odin.IsOdin"/>, <see cref="LokeProtocol.PerformHandshakeAsync"/>).</summary>
+        /// <summary>Espera tras magic ODIN (App.config Serial:OdinMagicReplyDelayMs).</summary>
         public static int OdinMagicReplyDelayMs { get; set; } = 400;
+
+        /// <summary>Tamaño RX del puerto serial (App.config Serial:ReadBufferSize; 65536 en perfil rápido).</summary>
+        public static int SerialReadBufferSize { get; set; } = 4096;
+
+        /// <summary>Tamaño TX del puerto serial (App.config Serial:WriteBufferSize).</summary>
+        public static int SerialWriteBufferSize { get; set; } = 4096;
 
         /// <summary>
         /// Set your serialport
@@ -47,8 +53,8 @@ namespace OdinFlash.Protocol.Port
             SetRtsIfManual(false);
             Port.ReadTimeout = 120000;
             Port.WriteTimeout = 120000;
-            Port.ReadBufferSize = 4096;
-            Port.WriteBufferSize = 4096;
+            Port.ReadBufferSize = SerialReadBufferSize;
+            Port.WriteBufferSize = SerialWriteBufferSize;
 
             return Open();
         }

@@ -6,6 +6,8 @@ namespace Odin_Flash.Util
 {
     public delegate void IsRunningProcessDelegate(bool IsRunning, string process);
 
+    public delegate void FlashCompletedDelegate(TimeSpan elapsed);
+
     /// <summary>Utilidades de Odin_Flash (rutas, formato de log).</summary>
     public class Util
     {
@@ -74,10 +76,17 @@ namespace Odin_Flash.Util
             return gb.ToString("F3", OdinLogCulture) + " GB";
         }
 
-        /// <summary>Tamaño para la línea [x,xx GB] en el log de flash.</summary>
-        public static string FormatFlashLineBracketGb(double sizeGb)
+        /// <summary>Tiempo transcurrido estilo Odin (ej. 04m: 28s).</summary>
+        public static string FormatOdinElapsedTime(TimeSpan elapsed)
         {
-            return sizeGb.ToString("F2", OdinLogCulture) + " GB";
+            var minutes = (int)elapsed.TotalMinutes;
+            return $"{minutes:D2}m: {elapsed.Seconds:D2}s";
+        }
+
+        /// <summary>Formato Odin clásico: 04m: 28s</summary>
+        public static string FormatElapsedOdin(TimeSpan elapsed)
+        {
+            return $"{(int)elapsed.TotalMinutes:00}m: {elapsed.Seconds:00}s";
         }
     }
 }

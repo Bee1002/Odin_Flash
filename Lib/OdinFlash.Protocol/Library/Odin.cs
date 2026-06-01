@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using static OdinFlash.Protocol.util.utils;
@@ -19,7 +20,15 @@ namespace OdinFlash.Protocol
 {
     public class Odin
     {
-        /// <summary>Máx. bytes por paquete en NAND (cmd 102). Por defecto 1 MiB; puede reducirse según Capa.</summary>
+        /// <summary>Entrada del plan de flash: archivo TAR + partición PIT + bytes LOKE.</summary>
+        public struct FlashPlanEntry
+        {
+            public FileFlash File;
+            public TPIT_Entry PitEntry;
+            public long FlashBytes;
+        }
+
+        /// <summary>Máx. bytes por paquete en NAND (cmd 102). Ajustable al arranque desde App.config (host Odin_Flash).</summary>
         public static int FlashChunkBytes { get; set; } = 1048576;
 
         /// <summary>Milisegundos de espera tras cada escritura de trozo y antes de leer el ACK de 8 bytes (0 = desactivado).</summary>
@@ -37,6 +46,10 @@ namespace OdinFlash.Protocol
         /// <summary>Purgar RX entre particiones (tras <see cref="InterPartitionDelayMs"/>).</summary>
         public static bool DiscardSerialRxBetweenPartitions { get; set; } = true;
 
+        // --- Tunables velocidad NAND (App.config → LokePerformanceSettings). NO confundir con totales LOKE. ---
+        // Defaults conservadores; Capa >= NandSmallPacketCapaThreshold activa paquete/delay reducidos en SendAsync.
+        // WritePort envía siempre `packet` bytes por ciclo ACK (último trozo rellena con ceros) — alineación LOKE.
+
         /// <summary>Capa ≥ este valor: limitar tamaño efectivo de paquete NAND.</summary>
         public static int NandSmallPacketCapaThreshold { get; set; } = 128;
 
@@ -47,6 +60,16 @@ namespace OdinFlash.Protocol
         public static int FlashAckDelayMsHighCapaMin { get; set; } = 3;
 
         int? _lastReportedCapa;
+        long _batchTotalBytes;
+        long _batchCompletedBefore;
+        long _phoneSessionTotalBytes;
+
+        // --- Barra de progreso del teléfono (Download Mode) ---
+        // Tres piezas distintas: (1) total LOKE = suma paquetes BL+AP+CP+CSC → LOKE_Initialize;
+        // (2) plan PIT = qué se escribe → FlashFirmware; (3) paquete 0x64/2 → ver Cmd.GetCmdBuff.
+
+        /// <summary>Total LOKE del lote (Calculated Size) para barra del teléfono y progreso PC.</summary>
+        public void SetPhoneSessionTotalBytes(long totalBytes) => _phoneSessionTotalBytes = totalBytes;
 
         /// <summary>Última «Capa» leída en <see cref="PrintInfo"/> (DVIF) en esta sesión.</summary>
         public int? LastReportedCapa => _lastReportedCapa;
@@ -65,6 +88,184 @@ namespace OdinFlash.Protocol
         /// <returns>serialport information
         public async Task<ItypePort> FindDownloadModePort() => await PortComm.FindDownloadModePort();
         public async Task<bool> LOKE_Initialize(long totalFileSize) => await cmd.LOKE_Initialize(this.Device, totalFileSize);
+
+        /// <summary>Informa al teléfono el total exacto del lote (barra de progreso en Download Mode).</summary>
+        public async Task<bool> InitializeFlashTotal(long totalFileSize) =>
+            await cmd.LOKE_SetFlashTotal(this.Device, totalFileSize);
+
+        /// <summary>
+        /// Qué flashear: PIT ↔ TAR, deduplicado. No confundir con el total LOKE del teléfono
+        /// (<see cref="CalculatePackagePhoneTotalBytes"/>).
+        /// </summary>
+        public List<FlashPlanEntry> BuildFlashPlan(List<FileFlash> list, List<TPIT_Entry> pit)
+        {
+            var plan = new List<FlashPlanEntry>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pitEntry in pit)
+            {
+                if (string.IsNullOrWhiteSpace(pitEntry.MflashFilename))
+                    continue;
+
+                var fileItem = FindMatchingFile(list, pitEntry);
+                if (fileItem == null || !fileItem.Enable || !IsFlashableFile(fileItem))
+                    continue;
+                if (!IsTarRootMember(fileItem.FileName))
+                    continue;
+
+                var key = $"{fileItem.FilePath}|{fileItem.FileName}|{pitEntry.Midentifier}";
+                if (!seen.Add(key))
+                    continue;
+
+                long flashBytes;
+                try
+                {
+                    flashBytes = GetTarEntryFlashBytes(fileItem.FilePath, fileItem.FileName);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (flashBytes <= 0L)
+                    continue;
+
+                fileItem.RawSize = flashBytes;
+                plan.Add(new FlashPlanEntry
+                {
+                    File = fileItem,
+                    PitEntry = pitEntry,
+                    FlashBytes = flashBytes
+                });
+            }
+
+            return plan;
+        }
+
+        /// <summary>Bytes LOKE del plan PIT (solo imágenes que se flashean).</summary>
+        public long CalculateFlashTotalBytes(List<FileFlash> list, List<TPIT_Entry> pit)
+        {
+            long total = 0L;
+            foreach (var entry in BuildFlashPlan(list, pit))
+                total += entry.FlashBytes;
+            return total;
+        }
+
+        /// <summary>
+        /// Calculated Size Odin: todos los slots habilitados. Este valor va a LOKE, no la suma del plan PIT.
+        /// </summary>
+        public long CalculatePackageTotalBytes(IEnumerable<FileFlash> list)
+        {
+            long total = 0L;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in list)
+            {
+                if (item == null || !item.Enable || !IsFlashableFile(item))
+                    continue;
+                if (!IsTarRootMember(item.FileName))
+                    continue;
+
+                var key = $"{item.FilePath}|{item.FileName}";
+                if (!seen.Add(key))
+                    continue;
+
+                try
+                {
+                    total += GetTarEntryFlashBytes(item.FilePath, item.FileName);
+                }
+                catch
+                {
+                    if (item.RawSize > 0L)
+                        total += item.RawSize;
+                }
+            }
+
+            return total;
+        }
+
+        /// <summary>Total LOKE final: max(Calculated Size, sesiones alineadas a 128 KiB).</summary>
+        public long CalculatePackagePhoneTotalBytes(IEnumerable<FileFlash> list)
+        {
+            long packageTotal = CalculatePackageTotalBytes(list);
+            long alignedTotal = 0L;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in list)
+            {
+                if (item == null || !item.Enable || !IsFlashableFile(item))
+                    continue;
+                if (!IsTarRootMember(item.FileName))
+                    continue;
+
+                var key = $"{item.FilePath}|{item.FileName}";
+                if (!seen.Add(key))
+                    continue;
+
+                long fileBytes;
+                try
+                {
+                    fileBytes = GetTarEntryFlashBytes(item.FilePath, item.FileName);
+                }
+                catch
+                {
+                    fileBytes = item.RawSize;
+                }
+
+                if (fileBytes > 0L)
+                    alignedTotal += CalculateLokeAlignedBytes(fileBytes, 0L);
+            }
+
+            if (packageTotal <= 0L)
+                return alignedTotal;
+            if (alignedTotal <= 0L)
+                return packageTotal;
+            return Math.Max(packageTotal, alignedTotal);
+        }
+
+        /// <summary>Tras leer PIT: por si la alineación por partición supera el total del paquete.</summary>
+        public long CalculatePhoneProgressTotalBytes(List<FileFlash> list, List<TPIT_Entry> pit)
+        {
+            long packagePhoneTotal = CalculatePackagePhoneTotalBytes(list);
+            long alignedPlanTotal = 0L;
+            foreach (var entry in BuildFlashPlan(list, pit))
+                alignedPlanTotal += CalculateLokeAlignedBytes(entry.FlashBytes, entry.PitEntry.MdeviceType);
+
+            if (alignedPlanTotal <= 0L)
+                return packagePhoneTotal;
+            return Math.Max(packagePhoneTotal, alignedPlanTotal);
+        }
+
+        // Suma de Calculate() por sesión NAND; el teléfono puede contar esto, no solo bytes crudos del .tar.
+        private long CalculateLokeAlignedBytes(long fileSize, long deviceType)
+        {
+            if (fileSize <= 0L)
+                return 0L;
+
+            int maxSessionLen = (deviceType == 1L || deviceType == 2L || deviceType == 8L)
+                ? 31457280
+                : 104857600;
+            long alignedTotal = 0L;
+            long sent = 0L;
+            while (sent < fileSize)
+            {
+                int sessionLen = (int)Math.Min(maxSessionLen, fileSize - sent);
+                alignedTotal += Calculate(sessionLen);
+                sent += sessionLen;
+            }
+
+            return alignedTotal;
+        }
+
+        /// <summary>Bytes reales que LOKE contabiliza: descomprimido para .lz4, tamaño TAR en el resto.</summary>
+        public long GetTarEntryFlashBytes(string tarPath, string fileName)
+        {
+            if (!TryGetTarEntryDataOffset(tarPath, fileName, out var dataOffset, out var tarSize))
+                throw new FileNotFoundException($"Cannot find {fileName} inside {tarPath}.");
+
+            if (fileName.EndsWith(".lz4", StringComparison.OrdinalIgnoreCase))
+                return ReadLz4DecompressedSize(tarPath, dataOffset, fileName);
+
+            return tarSize;
+        }
 
 
         /// <summary>
@@ -144,86 +345,44 @@ namespace OdinFlash.Protocol
         }
 
         /// <summary>
-        /// GetDeviceInfo and print information
+        /// GetDeviceInfo and print information (orden fijo estilo Odin).
         /// </summary>
-        /// <returns></returns>
         public async Task PrintInfo()
         {
             _lastReportedCapa = null;
             var info = await DVIF();
+            LogDeviceInfoField(info, "model", "Model Number: ");
+            LogDeviceInfoField(info, "un", "Unique Id: ");
+            LogDeviceInfoField(info, "capa", "Capa Number: ", value =>
+            {
+                if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var cap))
+                    _lastReportedCapa = cap;
+            });
+            LogDeviceInfoField(info, "vendor", "vendor: ");
+            LogDeviceInfoField(info, "fwver", "Firmware Version: ");
+            LogDeviceInfoField(info, "product", "Product Id: ");
+            LogDeviceInfoField(info, "prov", "Provision: ");
+            LogDeviceInfoField(info, "sales", "Sales Code: ");
+            LogDeviceInfoField(info, "ver", "Build Number: ");
+            LogDeviceInfoField(info, "did", "did Number: ");
+            LogDeviceInfoField(info, "tmu_temp", "Tmu Number: ");
+        }
+
+        private void LogDeviceInfoField(
+            Dictionary<string, string> info,
+            string key,
+            string label,
+            Action<string> onLogged = null)
+        {
             foreach (var item in info)
             {
-                switch (item.Key.ToLower())
-                {
-                    case "capa":
-                        {
-                            Log?.Invoke("Capa Number: ", MsgType.Message);
-                            Log?.Invoke(item.Value , MsgType.Result);
-                            if (int.TryParse(item.Value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var cap))
-                                _lastReportedCapa = cap;
-                            break;
-                        }
-                    case "product":
-                        {
-                            Log?.Invoke("Product Id: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "model":
-                        {
-                            Log?.Invoke("Model Number: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "fwver":
-                        {
-                            Log?.Invoke("Firmware Version: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "vendor":
-                        {
-                            Log?.Invoke("vendor: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "sales":
-                        {
-                            Log?.Invoke("Sales Code: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "ver":
-                        {
-                            Log?.Invoke("Build Number: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "did":
-                        {
-                            Log?.Invoke("did Number: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "un":
-                        {
-                            Log?.Invoke("Unique Id: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "tmu_temp":
-                        {
-                            Log?.Invoke("Tmu Number: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                    case "prov":
-                        {
-                            Log?.Invoke("Provision: ", MsgType.Message);
-                            Log?.Invoke(item.Value, MsgType.Result);
-                            break;
-                        }
-                }
+                if (!string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                Log?.Invoke(label, MsgType.Message);
+                Log?.Invoke(item.Value, MsgType.Result);
+                onLogged?.Invoke(item.Value);
+                return;
             }
         }
 
@@ -313,21 +472,164 @@ namespace OdinFlash.Protocol
             return filename.Replace('\\', '/').Trim().TrimStart('/');
         }
 
+        private static string GetTarMemberStorageName(string name)
+        {
+            var n = name.Replace('\\', '/').Trim();
+            while (n.StartsWith("./", StringComparison.Ordinal))
+                n = n.Substring(2);
+            return n;
+        }
+
+        private static string NormalizeTarMemberName(string name)
+        {
+            var n = GetTarMemberStorageName(name);
+            if (n.Contains("/"))
+                return n;
+            while (n.EndsWith(".lz4", StringComparison.OrdinalIgnoreCase))
+                n = n.Substring(0, n.Length - 4);
+            return n;
+        }
+
+        private static bool IsTarRootMember(string entryName)
+        {
+            var n = NormalizeTarMemberName(entryName);
+            return !string.IsNullOrEmpty(n) && !n.Contains("/");
+        }
+
+        private static bool TarMemberNamesMatch(string left, string right)
+        {
+            left = NormalizeTarMemberName(left);
+            right = NormalizeTarMemberName(right);
+            if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var leftBase = Path.GetFileNameWithoutExtension(left);
+            var rightBase = Path.GetFileNameWithoutExtension(right);
+            if (string.IsNullOrEmpty(leftBase) || string.IsNullOrEmpty(rightBase))
+                return false;
+            if (string.Equals(leftBase, rightBase, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (leftBase.StartsWith("preloader", StringComparison.OrdinalIgnoreCase)
+                && rightBase.StartsWith("preloader", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        private FileFlash FindMatchingFile(List<FileFlash> files, TPIT_Entry pitEntry)
+        {
+            FileFlash loose = null;
+            foreach (var item in files)
+            {
+                if (!IsFlashableFile(item))
+                    continue;
+
+                if (TarMemberNamesMatch(pitEntry.MflashFilename, item.FileName))
+                    return item;
+
+                var pitBase = Path.GetFileNameWithoutExtension(NormalizeTarMemberName(pitEntry.MflashFilename));
+                var tarBase = Path.GetFileNameWithoutExtension(NormalizeTarMemberName(item.FileName));
+                if (!string.IsNullOrEmpty(pitBase)
+                    && string.Equals(pitBase, tarBase, StringComparison.OrdinalIgnoreCase))
+                    loose = loose ?? item;
+            }
+
+            return loose;
+        }
+
+        private static long ReadLz4DecompressedSize(string path, long dataOffset, string contextName)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                fs.Position = dataOffset;
+                using (var lz4 = LZ4Stream.Decode(fs))
+                {
+                    if (lz4.Length <= 0L)
+                        throw new InvalidDataException($"Cannot get decompressed size for {contextName}.");
+                    return lz4.Length;
+                }
+            }
+        }
+
+        private static bool TryGetTarEntryDataOffset(
+            string tarPath,
+            string fileName,
+            out long dataOffset,
+            out long dataSize)
+        {
+            dataOffset = 0L;
+            dataSize = 0L;
+
+            using (var fs = new FileStream(tarPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                var offset = 0L;
+                var header = new byte[512];
+
+                while (fs.Read(header, 0, 512) == 512)
+                {
+                    if (header[0] == 0)
+                        break;
+
+                    var name = ParseTarName(header);
+                    if (name.EndsWith("/", StringComparison.Ordinal))
+                    {
+                        offset += 512;
+                        fs.Position = offset;
+                        continue;
+                    }
+
+                    var fileSize = ParseTarOctalField(header, 124, 12);
+                    if (string.Equals(name, fileName, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(GetTarMemberStorageName(name), GetTarMemberStorageName(fileName), StringComparison.OrdinalIgnoreCase))
+                    {
+                        dataOffset = offset + 512;
+                        dataSize = fileSize;
+                        return true;
+                    }
+
+                    offset += 512 + TarDataPaddedSize(fileSize);
+                    fs.Position = offset;
+                }
+            }
+
+            return false;
+        }
+
+        private static long TarDataPaddedSize(long size) =>
+            ((size + 511) / 512) * 512;
+
+        private static string ParseTarName(byte[] header)
+        {
+            var end = Array.IndexOf(header, (byte)0, 0, 100);
+            if (end < 0)
+                end = 100;
+            return Encoding.ASCII.GetString(header, 0, end).TrimEnd('\0', ' ');
+        }
+
+        private static long ParseTarOctalField(byte[] header, int offset, int length)
+        {
+            long value = 0L;
+            for (var i = 0; i < length; i++)
+            {
+                var b = header[offset + i];
+                if (b == 0 || b == (byte)' ')
+                    break;
+                if (b < (byte)'0' || b > (byte)'7')
+                    continue;
+                value = value * 8 + (b - '0');
+            }
+
+            return value;
+        }
+
         private string NormalizeFlashName(string filename)
         {
-            if (string.IsNullOrEmpty(filename))
-                return string.Empty;
-
-            filename = filename.Replace('\\', '/');
-            var slash = filename.LastIndexOf('/');
-            if (slash >= 0 && slash + 1 < filename.Length)
-                filename = filename.Substring(slash + 1);
-
-            if (filename.EndsWith(".lz4", StringComparison.OrdinalIgnoreCase))
-                filename = filename.Substring(0, filename.Length - 4);
-
-            return filename.Trim();
+            return NormalizeTarMemberName(filename);
         }
+
+        private FileFlash FoundItem(List<FileFlash> files, TPIT_Entry partition) =>
+            FindMatchingFile(files, partition);
 
         private bool IsFlashableFile(FileFlash file)
         {
@@ -347,32 +649,11 @@ namespace OdinFlash.Protocol
                 || extension.Equals(".mbn", StringComparison.OrdinalIgnoreCase)
                 || extension.Equals(".elf", StringComparison.OrdinalIgnoreCase);
         }
-
-        private FileFlash FoundItem(List<FileFlash> files, TPIT_Entry partition)
-        {
-            foreach (var item in files)
-            {
-                if (!IsFlashableFile(item))
-                    continue;
-
-                var filename = NormalizeFlashName(item.FileName);
-                var pitName = NormalizeFlashName(partition.MflashFilename);
-                if (string.Equals(filename, pitName, StringComparison.OrdinalIgnoreCase))
-                {
-                    return item;
-                }
-            }
-            return null;
-        }
        
         private FileFlash FoundItem(FileFlash files, TPIT_Entry partition)
         {
-            var filename = NormalizeFlashName(files.FileName);
-            var pitName = NormalizeFlashName(partition.MflashFilename);
-            if (string.Equals(filename, pitName, StringComparison.OrdinalIgnoreCase))
-            {
+            if (TarMemberNamesMatch(partition.MflashFilename, files.FileName))
                 return files;
-            }
             return null;
         }
 
@@ -413,6 +694,7 @@ namespace OdinFlash.Protocol
                 await Device.DiscardInBufferAsync();
             }
             int sent = 0;
+            // Capa >= 128: paquete/delay desde App.config. Capa baja (ej. G950F=64): FlashChunkBytes 1 MiB sin delay Capa.
             int packet = FlashChunkBytes;
             if (_lastReportedCapa is int cap && cap >= NandSmallPacketCapaThreshold)
                 packet = Math.Min(packet, NandPacketBytesWhenHighCapa);
@@ -429,6 +711,7 @@ namespace OdinFlash.Protocol
                 Array.Clear(flashBuffer, 0, flashBuffer.Length);
                 int toRead = Math.Min(flashBuffer.Length, sessionLength - sent);
                 await ReadExactlyFromStream(inputStream, flashBuffer, toRead);
+                // Siempre `packet` bytes por ACK LOKE (cola en cero si toRead < packet).
                 await Device.WritePort(flashBuffer, flashBuffer.Length);
                 if (ackDelay > 0)
                     await Task.Delay(ackDelay);
@@ -468,7 +751,7 @@ namespace OdinFlash.Protocol
                 int num = sessionCount + 1;
                 sessionCount = num;
             }
-            ProgressChanged?.Invoke(entry.MflashFilename, size, 0L, 0);
+            ReportProgress(entry.MflashFilename, size, 0L);
             long currentProgress = 0L;
             long sent = 0L;
             int sessionIndex = 0;
@@ -479,7 +762,7 @@ namespace OdinFlash.Protocol
                 Action<long> addProgressAction = delegate (long ff)
                 {
                     currentProgress += ff;
-                    ProgressChanged?.Invoke(entry.MflashFilename, size, currentProgress, currentProgress);
+                    ReportProgress(entry.MflashFilename, size, currentProgress);
                 };
                 var write = await SendAsync(entry, inputStream, sessionLen, isLast, addProgressAction, EfsClear, BootUpdate);
                 if (!write)
@@ -559,48 +842,68 @@ namespace OdinFlash.Protocol
             }
             return ListCorrupted;
         }
-        
+
+        private void ReportProgress(string filename, long partitionMax, long partitionValue)
+        {
+            long batchTotal = _batchTotalBytes > 0L ? _batchTotalBytes : partitionMax;
+            long batchWritten = _batchTotalBytes > 0L
+                ? _batchCompletedBefore + partitionValue
+                : partitionValue;
+            if (batchTotal > 0L && batchWritten > batchTotal)
+                batchWritten = batchTotal;
+
+            ProgressChanged?.Invoke(
+                filename,
+                partitionMax,
+                partitionValue,
+                partitionValue,
+                batchTotal,
+                batchWritten);
+        }
+
         public async Task<bool> FlashFirmware(List<FileFlash> list, List<TPIT_Entry> pit, int EfsClear, int BootUpdate, bool Debug)
         {
-            var WritenItem = new List<FileFlash>();
-            foreach (var item in pit)
+            var plan = BuildFlashPlan(list, pit);
+            if (_phoneSessionTotalBytes > 0L)
+                _batchTotalBytes = _phoneSessionTotalBytes; // Mismo total que LOKE (barra PC coherente con teléfono)
+            else
             {
-                var FileItem = FoundItem(list, item);
-                if (FileItem != null)
+                _batchTotalBytes = 0L;
+                foreach (var planned in plan)
+                    _batchTotalBytes += planned.FlashBytes;
+            }
+            _batchCompletedBefore = 0L;
+            var WritenItem = new List<FileFlash>();
+            foreach (var planned in plan)
+            {
+                var FileItem = planned.File;
+                var pitEntry = planned.PitEntry;
+                if (Debug)
                 {
-                    if (!FileItem.Enable)
-                    {
-                        continue;
-                    }
+                    Log?.Invoke($"Flashing {FileItem.FileName}: ", MsgType.Message);
+                }
+                if (!await FlashFromTar(FileItem.FilePath, planned.FlashBytes, FileItem.FileName,
+                    pitEntry, EfsClear, BootUpdate))
+                {
                     if (Debug)
                     {
-                        Log?.Invoke($"Flashing {FileItem.FileName}: ",  MsgType.Message);
+                        Log?.Invoke($" : Failed", MsgType.Result, true);
                     }
-                    if (!await FlashFromTar(FileItem.FilePath, FileItem.RawSize, FileItem.FileName,
-                        item, EfsClear, BootUpdate))
-                    {
-                        if (Debug)
-                        {
-                            Log?.Invoke($" : Failed", MsgType.Result , true);
-                        }
-                        return false;
-                    }
-                    else
-                    {
-                        WritenItem.Add(FileItem);
-                        if (Debug)
-                        {
-                            Log?.Invoke($" : Ok", MsgType.Result);
-                        }
+                    return false;
+                }
 
-                        if (InterPartitionDelayMs > 0)
-                            await Task.Delay(InterPartitionDelayMs);
-                        if (DiscardSerialRxBetweenPartitions)
-                        {
-                            try { await Device.DiscardInBufferAsync(); } catch { }
-                        }
-                    }
+                WritenItem.Add(FileItem);
+                _batchCompletedBefore += planned.FlashBytes;
+                if (Debug)
+                {
+                    Log?.Invoke($" : Ok", MsgType.Result);
+                }
 
+                if (InterPartitionDelayMs > 0)
+                    await Task.Delay(InterPartitionDelayMs);
+                if (DiscardSerialRxBetweenPartitions)
+                {
+                    try { await Device.DiscardInBufferAsync(); } catch { }
                 }
             }
 
@@ -625,7 +928,7 @@ namespace OdinFlash.Protocol
         {
 
             string extension = Path.GetExtension(inp_filename);
-            ProgressChanged?.Invoke(inp_filename, 0, 0, 0);
+            ReportProgress(inp_filename, 0L, 0L);
             using (var reader = new BinaryReader(File.Open(Filepath, FileMode.Open)))
             {
                 var j = 0L;

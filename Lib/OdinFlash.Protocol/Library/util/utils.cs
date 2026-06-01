@@ -11,7 +11,13 @@ namespace OdinFlash.Protocol.util
         public static bool Stop;
         public delegate void LogDelegate(string Text,  MsgType Color ,bool IsError = false);
         public delegate void ProgressChangeDelegate(long max, long value);
-        public delegate void ProgressChangedDelegate(string filename, long max, long value, long WritenSize);
+        public delegate void ProgressChangedDelegate(
+            string filename,
+            long partitionMax,
+            long partitionValue,
+            long writtenSize,
+            long batchTotal,
+            long batchWritten);
 
         public static string Right(this string value, int length)
         {

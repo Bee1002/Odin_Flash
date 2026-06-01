@@ -1,4 +1,5 @@
 using Odin_Flash.Controls;
+using Odin_Flash.Util;
 using OdinFlash.Protocol.Port;
 using System;
 using System.Diagnostics;
@@ -23,15 +24,34 @@ namespace Odin_Flash.window
         private bool IsCheckingDeviceStatus;
         private bool IsRunningOperation;
         private string LastDetectedComLabel;
+        private DateTime LastTransferSampleUtc;
+        private long LastTransferWrittenBytes;
+        private long LastBatchTotalBytes;
+        private bool HasTransferSample;
 
+        private readonly object ProgressSync = new object();
+        private int ProgressThrottleMs;
+        private int LastProgressUiTick;
+        private bool ProgressUiDirty;
+        private string PendingFilename;
+        private long PendingPartitionMax;
+        private long PendingPartitionValue;
+        private long PendingWrittenSize;
+        private long PendingBatchTotal;
+        private long PendingBatchWritten;
+
+        // Throttle progreso WPF (Ui:ProgressThrottleMs): evita Dispatcher.Invoke por cada trozo NAND (~34k en 8 GB).
         public Main()
         {
             InitializeComponent();
+
+            ProgressThrottleMs = LokePerformanceSettings.ProgressThrottleMs;
 
             Flash = new Flash();
             Flash.Log += Flash_Log;
             Flash.ProgressChanged += Flash_ProgressChanged;
             Flash.IsRunning += Flash_IsRunning;
+            Flash.FlashCompleted += Flash_FlashCompleted;
             FrmMain.Navigate(Flash);
 
             DeviceStatusTimer = new DispatcherTimer
@@ -76,6 +96,11 @@ namespace Odin_Flash.window
                 BtnFlash.IsEnabled = !IsRunning;
                 BtnReadPit.IsEnabled = !IsRunning;
                 BtnStop.IsEnabled = IsRunning;
+
+                if (IsRunning)
+                    ResetProgressUi();
+                else
+                    FlushPendingProgressUi();
             });
         }
 
@@ -105,15 +130,216 @@ namespace Odin_Flash.window
             }
         }
 
-        private void Flash_ProgressChanged(string filename, long max, long value, long WritenSize)
+        private void Flash_ProgressChanged(
+            string filename,
+            long partitionMax,
+            long partitionValue,
+            long writtenSize,
+            long batchTotal,
+            long batchWritten)
+        {
+            lock (ProgressSync)
+            {
+                PendingFilename = filename;
+                PendingPartitionMax = partitionMax;
+                PendingPartitionValue = partitionValue;
+                PendingWrittenSize = writtenSize;
+                PendingBatchTotal = batchTotal;
+                PendingBatchWritten = batchWritten;
+                ProgressUiDirty = true;
+            }
+
+            if (ProgressThrottleMs <= 0)
+            {
+                ApplyProgressUi(force: true);
+                return;
+            }
+
+            var now = Environment.TickCount;
+            lock (ProgressSync)
+            {
+                if (!ProgressUiDirty)
+                    return;
+                if (unchecked(now - LastProgressUiTick) < ProgressThrottleMs)
+                    return;
+            }
+
+            ApplyProgressUi(force: false);
+        }
+
+        private void FlushPendingProgressUi()
+        {
+            ApplyProgressUi(force: true);
+        }
+
+        private void ApplyProgressUi(bool force)
+        {
+            string filename;
+            long partitionMax;
+            long partitionValue;
+            long writtenSize;
+            long batchTotal;
+            long batchWritten;
+
+            lock (ProgressSync)
+            {
+                if (!ProgressUiDirty && !force)
+                    return;
+
+                filename = PendingFilename;
+                partitionMax = PendingPartitionMax;
+                partitionValue = PendingPartitionValue;
+                writtenSize = PendingWrittenSize;
+                batchTotal = PendingBatchTotal;
+                batchWritten = PendingBatchWritten;
+                ProgressUiDirty = false;
+                LastProgressUiTick = Environment.TickCount;
+            }
+
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                var partitionPercent = ToPercent(partitionValue, partitionMax);
+                var batchPercent = ToPercent(batchWritten, batchTotal);
+
+                ProgBarPartition.Value = partitionPercent;
+                ProgBarBatch.Value = batchPercent;
+                TxtPartitionPercent.Text = FormatPercentLabel(partitionPercent);
+                TxtBatchPercent.Text = FormatPercentLabel(batchPercent);
+
+                LastBatchTotalBytes = batchTotal;
+                TxtTotalSize.Text = $"Total Size : {Util.Util.GetBytesReadable(batchTotal)}";
+                TxtWrittenSize.Text = $"Written Size : {Util.Util.GetBytesReadable(batchWritten)}";
+                UpdateTransferRate(batchWritten);
+
+                Events.Text = string.IsNullOrEmpty(filename)
+                    ? writtenSize.ToString("###,###,###")
+                    : $"{filename} | {writtenSize:###,###,###}";
+                Events.Foreground = GetBrush("FileTextBrush", Brushes.DodgerBlue);
+            });
+        }
+
+        private void ResetProgressUi()
+        {
+            ProgBarPartition.Value = 0;
+            ProgBarBatch.Value = 0;
+            TxtPartitionPercent.Text = "0%";
+            TxtBatchPercent.Text = "0%";
+            TxtTotalSize.Text = "Total Size : 0 B";
+            TxtWrittenSize.Text = "Written Size : 0 B";
+            TxtTransferRate.Text = "Transfer Rate : 0 B/s";
+            LastTransferSampleUtc = DateTime.UtcNow;
+            LastTransferWrittenBytes = 0;
+            LastBatchTotalBytes = 0L;
+            HasTransferSample = false;
+            lock (ProgressSync)
+            {
+                ProgressUiDirty = false;
+                LastProgressUiTick = 0;
+            }
+        }
+
+        /// <summary>Flash OK: barras y Written = Total (estilo Odin al terminar).</summary>
+        private void FinalizeProgressUiOnSuccess(long batchWritten, TimeSpan elapsed)
+        {
+            ProgBarPartition.Value = 100;
+            ProgBarBatch.Value = 100;
+            TxtPartitionPercent.Text = "100%";
+            TxtBatchPercent.Text = "100%";
+
+            if (LastBatchTotalBytes > 0L)
+            {
+                var readable = Util.Util.GetBytesReadable(LastBatchTotalBytes);
+                TxtTotalSize.Text = $"Total Size : {readable}";
+                TxtWrittenSize.Text = $"Written Size : {readable}";
+                if (elapsed.TotalSeconds > 0.1 && batchWritten > 0L)
+                {
+                    var avgRate = batchWritten / elapsed.TotalSeconds;
+                    TxtTransferRate.Text = $"Transfer Rate : {Util.Util.GetBytesReadable((long)avgRate)}/s";
+                }
+            }
+            else if (TxtTotalSize.Text.StartsWith("Total Size : ", StringComparison.Ordinal))
+            {
+                TxtWrittenSize.Text = "Written Size : " + TxtTotalSize.Text.Substring("Total Size : ".Length);
+            }
+        }
+
+        private static string FormatPercentLabel(double percent)
+        {
+            if (percent <= 0)
+                return "0%";
+            if (percent >= 100)
+                return "100%";
+            return $"{percent:0}%";
+        }
+
+        private static double ToPercent(long value, long max)
+        {
+            if (max <= 0L)
+                return 0;
+
+            var percent = value * 100.0 / max;
+            if (percent < 0)
+                return 0;
+            if (percent > 100)
+                return 100;
+            return percent;
+        }
+
+        private void UpdateTransferRate(long batchWritten)
+        {
+            var now = DateTime.UtcNow;
+            if (HasTransferSample)
+            {
+                var elapsedSeconds = (now - LastTransferSampleUtc).TotalSeconds;
+                if (elapsedSeconds >= 0.25)
+                {
+                    var delta = batchWritten - LastTransferWrittenBytes;
+                    if (delta >= 0)
+                    {
+                        var bytesPerSecond = delta / elapsedSeconds;
+                        TxtTransferRate.Text = $"Transfer Rate : {Util.Util.GetBytesReadable((long)bytesPerSecond)}/s";
+                    }
+
+                    LastTransferSampleUtc = now;
+                    LastTransferWrittenBytes = batchWritten;
+                }
+            }
+            else
+            {
+                HasTransferSample = true;
+                LastTransferSampleUtc = now;
+                LastTransferWrittenBytes = batchWritten;
+            }
+        }
+
+        private void Flash_FlashCompleted(TimeSpan elapsed)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
-                ProgBar.Maximum = max;
-                ProgBar.Value = value;
-                Events.Text = $"{filename} | {WritenSize:###,###,###}";
-                Events.Foreground = GetBrush("FileTextBrush", Brushes.DodgerBlue);
+                FinalizeProgressUiOnSuccess(LastBatchTotalBytes, elapsed);
+                AppendCompletedLog("All Tasks Is Completed", elapsed);
+
+                Events.Text = "All Tasks Is Completed";
+                Events.Foreground = Brushes.White;
             });
+        }
+
+        private void AppendCompletedLog(string title, TimeSpan elapsed)
+        {
+            var paragraph = new Paragraph { Margin = new Thickness(0, 4, 0, 0) };
+            paragraph.Inlines.Add(new Run(title)
+            {
+                FontSize = 10.5,
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.SemiBold
+            });
+            paragraph.Inlines.Add(new Run($" - Elapsed Time : {Util.Util.FormatElapsedOdin(elapsed)}")
+            {
+                FontSize = 10.5,
+                Foreground = (SolidColorBrush)new BrushConverter().ConvertFrom("#FF9800")
+            });
+            RichLog.Document.Blocks.Add(paragraph);
+            RichLog.ScrollToEnd();
         }
 
         private void Flash_Log(string Text, MsgType Color, bool IsError = false)
