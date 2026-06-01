@@ -7,6 +7,9 @@
              mc:Ignorable="d"
              TextElement.Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"
              Background="Transparent"
+             AllowDrop="True"
+             DragOver="Flash_DragOver"
+             Drop="Flash_Drop"
              d:DesignWidth="500">
     <Grid Background="Transparent">
         <Grid Margin="2">
@@ -16,12 +19,12 @@
                 <RowDefinition Height="auto"/>
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Margin="0,0,0,4">
-                <TextBlock Text="Firmware"
-                           FontSize="16"
-                           FontWeight="SemiBold"
-                           Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
-            </Grid>
+            <TextBlock Grid.Row="0"
+                       Text="Firmware"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,4"
+                       Foreground="{DynamicResource PrimaryHueDarkForegroundBrush}"/>
 
             <Grid x:Name="Features"
                   Grid.Row="1"

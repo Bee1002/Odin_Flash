@@ -101,6 +101,7 @@
       <DependentUpon>FlashField.xaml</DependentUpon>
     </Compile>
     <Compile Include="Util\FileFlash.cs" />
+    <Compile Include="Util\FirmwarePackageClassifier.cs" />
     <Compile Include="Util\LokePerformanceSettings.cs" />
     <Compile Include="Util\SerialConnectionSettings.cs" />
     <Compile Include="Util\Util.cs" />

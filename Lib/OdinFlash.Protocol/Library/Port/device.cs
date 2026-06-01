@@ -168,6 +168,24 @@ namespace OdinFlash.Protocol.Port
             }
         }
 
+        /// <summary>Vacía RX y TX entre particiones NAND (estado LOKE limpio).</summary>
+        public async Task DiscardSerialBuffersAsync()
+        {
+            await _serialIo.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (Port != null && Port.IsOpen)
+                {
+                    Port.DiscardInBuffer();
+                    Port.DiscardOutBuffer();
+                }
+            }
+            finally
+            {
+                _serialIo.Release();
+            }
+        }
+
         /// <summary>
         /// open Registered Port;
         /// </summary>

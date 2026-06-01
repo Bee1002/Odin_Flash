@@ -7,59 +7,50 @@ using System.Globalization;
 namespace Odin_Flash.Util
 {
     /// <summary>
-    /// Aplica tunables de velocidad LOKE desde App.config al arranque (<see cref="App.OnStartup"/>).
+    /// Tunables LOKE desde App.config (<see cref="ApplyFromConfig"/> al arranque)
+    /// y perfil por Capa DVIF (<see cref="ApplyCapaRuntimeProfile"/> tras conectar).
     /// </summary>
     /// <remarks>
-    /// Separado a propósito de Calculated Size / GetCmdBuff / LOKE_Initialize (barra teléfono).
+    /// Dos niveles según Capa (umbral 128):
+    ///   Capa ≥ 128 — paquete NAND/LOKE 0x64/5 configurable (512 KB en auto; A326B ~7–8 min).
+    ///   Capa &lt; 128 — paquete fijo 1 MiB (<see cref="Odin.FlashChunkBytes"/>); delay inter-partición mayor (G950F).
     ///
-    /// Capa del dispositivo (DVIF):
-    ///   - Capa &lt; 128: SendAsync usa FlashChunkBytes (1 MiB) sin delay extra de Capa alta.
-    ///   - Capa &gt;= 128: paquete limitado por NandPacketBytesWhenHighCapa y opcional FlashAckDelayMsHighCapaMin.
-    ///
-    /// Referencia real (mismo cable/USB):
-    ///   SM-A326B, 8,521 GB, Capa 128: ~17m → ~8m tras perfil fast (MediaTek).
-    ///   SM-G950F, 5,695 GB, Capa 64:  ~5m 41s (sobre todo gana delay inter-partición + UI + buffers).
-    ///
-    /// Perfil Capa alta (<see cref="ApplyHighCapaRuntimeProfile"/> tras DVIF):
-    ///   fast     — claves Loke:FlashAckDelayMsHighCapaMin / NandPacketBytesHighCapa (A326B validado).
-    ///   balanced — 1 ms ACK + 512 KB (default; mejor compatibilidad Qualcomm Capa 128, ej. A235M).
-    ///   safe     — 3 ms + 256 KB (rollback conservador).
-    ///
-    /// Siguiente paso opcional (solo si A326B sigue estable en fast): NandPacketBytesHighCapa=1048576.
-    /// No implementar aquí: LZ4 comprimido por cable (requiere investigación LOKE aparte).
+    /// El fix G950F es alinear LOKE 0x64/5 con el trozo NAND real vía <see cref="Odin.LokeSessionPacketBytes"/>,
+    /// no un «modo legacy» aparte con lógica duplicada.
     /// </remarks>
     public static class LokePerformanceSettings
     {
-        /// <summary>Default código si falta clave en App.config (perfil conservador pre-optimización).</summary>
         public const int DefaultFlashAckDelayMsHighCapaMin = 3;
-
         public const int DefaultNandPacketBytesHighCapa = 262144;
-        public const int DefaultInterPartitionDelayMs = 300;
+        public const int DefaultInterPartitionDelayMs = 50;
+        public const int DefaultInterPartitionDelayMsLowCapa = 100;
         public const int DefaultSerialBufferSize = 4096;
-
-        /// <summary>0 = actualizar progreso en cada trozo NAND (sin throttle).</summary>
         public const int DefaultProgressThrottleMs = 0;
 
         public static int ProgressThrottleMs { get; private set; } = DefaultProgressThrottleMs;
 
-        private static int _fastFlashAckDelayMsHighCapaMin = DefaultFlashAckDelayMsHighCapaMin;
-        private static int _fastNandPacketBytesHighCapa = DefaultNandPacketBytesHighCapa;
+        private static int _flashAckDelayMsHighCapaMin = DefaultFlashAckDelayMsHighCapaMin;
+        private static int _nandPacketBytesHighCapa = DefaultNandPacketBytesHighCapa;
+        private static int _interPartitionDelayMsHighCapa = DefaultInterPartitionDelayMs;
+        private static int _interPartitionDelayMsLowCapa = DefaultInterPartitionDelayMsLowCapa;
 
         public static void ApplyFromConfig()
         {
-            _fastFlashAckDelayMsHighCapaMin = ClampInt(
+            _flashAckDelayMsHighCapaMin = ClampInt(
                 ReadInt("Loke:FlashAckDelayMsHighCapaMin", DefaultFlashAckDelayMsHighCapaMin),
                 0, 100);
-            _fastNandPacketBytesHighCapa = ClampInt(
+            _nandPacketBytesHighCapa = ClampInt(
                 ReadInt("Loke:NandPacketBytesHighCapa", DefaultNandPacketBytesHighCapa),
                 4096, 1048576);
-
-            Odin.FlashAckDelayMsHighCapaMin = _fastFlashAckDelayMsHighCapaMin;
-            Odin.NandPacketBytesWhenHighCapa = _fastNandPacketBytesHighCapa;
-
-            Odin.InterPartitionDelayMs = ClampInt(
+            _interPartitionDelayMsHighCapa = ClampInt(
                 ReadInt("Loke:InterPartitionDelayMs", DefaultInterPartitionDelayMs),
                 0, 5000);
+            _interPartitionDelayMsLowCapa = ClampInt(
+                ReadInt("Loke:InterPartitionDelayMsLegacy", DefaultInterPartitionDelayMsLowCapa),
+                0, 5000);
+
+            Odin.FlashAckDelayMsHighCapaMin = _flashAckDelayMsHighCapaMin;
+            Odin.NandPacketBytesWhenHighCapa = _nandPacketBytesHighCapa;
 
             var capaThreshold = ReadInt("Loke:NandSmallPacketCapaThreshold", Odin.NandSmallPacketCapaThreshold);
             if (capaThreshold > 0)
@@ -83,18 +74,34 @@ namespace Odin_Flash.Util
         }
 
         /// <summary>
-        /// Tras leer Capa en DVIF: solo Capa ≥ umbral. Capa &lt; 128 no se toca (1 MiB, sin delay Capa alta).
+        /// Tras DVIF: fija paquete LOKE/NAND e inter-partición según Capa. Llamar antes de SetFlashTotal y flash.
         /// </summary>
-        public static void ApplyHighCapaRuntimeProfile(int? capa)
+        public static void ApplyCapaRuntimeProfile(int? capa)
         {
-            if (!capa.HasValue || capa.Value < Odin.NandSmallPacketCapaThreshold)
-                return;
+            bool highCapa = capa.HasValue && capa.Value >= Odin.NandSmallPacketCapaThreshold;
 
+            if (highCapa)
+            {
+                ApplyHighCapaNandTuning();
+                Odin.InterPartitionDelayMs = _interPartitionDelayMsHighCapa;
+                Odin.LokeSessionPacketBytes = Odin.NandPacketBytesWhenHighCapa;
+            }
+            else
+            {
+                // Capa &lt; 128 o sin DVIF: 1 MiB (LOKE 0x64/5 debe coincidir con SendAsync — fix G950F).
+                Odin.InterPartitionDelayMs = _interPartitionDelayMsLowCapa;
+                Odin.LokeSessionPacketBytes = Odin.FlashChunkBytes;
+            }
+        }
+
+        private static void ApplyHighCapaNandTuning()
+        {
             switch (ReadHighCapaProfile())
             {
                 case HighCapaProfileKind.Fast:
-                    Odin.FlashAckDelayMsHighCapaMin = _fastFlashAckDelayMsHighCapaMin;
-                    Odin.NandPacketBytesWhenHighCapa = _fastNandPacketBytesHighCapa;
+                case HighCapaProfileKind.Auto:
+                    Odin.FlashAckDelayMsHighCapaMin = _flashAckDelayMsHighCapaMin;
+                    Odin.NandPacketBytesWhenHighCapa = _nandPacketBytesHighCapa;
                     break;
                 case HighCapaProfileKind.Safe:
                     Odin.FlashAckDelayMsHighCapaMin = 3;
@@ -109,6 +116,7 @@ namespace Odin_Flash.Util
 
         private enum HighCapaProfileKind
         {
+            Auto,
             Balanced,
             Fast,
             Safe
@@ -118,16 +126,18 @@ namespace Odin_Flash.Util
         {
             var raw = ConfigurationManager.AppSettings["Loke:HighCapaProfile"];
             if (string.IsNullOrWhiteSpace(raw))
-                return HighCapaProfileKind.Balanced;
+                return HighCapaProfileKind.Auto;
 
             switch (raw.Trim().ToLowerInvariant())
             {
                 case "fast":
                     return HighCapaProfileKind.Fast;
+                case "balanced":
+                    return HighCapaProfileKind.Balanced;
                 case "safe":
                     return HighCapaProfileKind.Safe;
                 default:
-                    return HighCapaProfileKind.Balanced;
+                    return HighCapaProfileKind.Auto;
             }
         }
 

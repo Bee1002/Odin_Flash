@@ -119,75 +119,84 @@ namespace Odin_Flash.Controls
             };
             bool? result = dlg.ShowDialog();
             if (result == true)
+                TryLoadTarPackage(dlg.FileName);
+        }
+
+        /// <summary>Carga un TAR/md5 en este slot (Browse o drag-and-drop).</summary>
+        public bool TryLoadTarPackage(string tarPath)
+        {
+            if (string.IsNullOrWhiteSpace(tarPath) || !System.IO.File.Exists(tarPath))
+                return false;
+
+            ClearPackage();
+            var odin = new Odin();
+            var item = odin.tar.TarInformation(tarPath);
+            if (item.Count <= 0)
+                return false;
+
+            foreach (var Tiem in item)
             {
-                BtnClear_Click(sender, e);
-                string filename = dlg.FileName;
-                var odin = new Odin();
-                var item = odin.tar.TarInformation(filename);
-                if (item.Count > 0)
+                if (!IsFlashableTarEntry(Tiem))
+                    continue;
+
+                if (!Exist(Tiem))
                 {
-                    foreach (var Tiem in item)
+                    var Extension = System.IO.Path.GetExtension(Tiem.Filename);
+                    var file = new FileFlash
                     {
-                        if (!IsFlashableTarEntry(Tiem))
-                            continue;
+                        Enable = true,
+                        FileName = Tiem.Filename,
+                        FilePath = tarPath
+                    };
 
-                        if (!Exist(Tiem))
+                    if (Extension == ".lz4")
+                    {
+                        try
                         {
-                            var Extension = System.IO.Path.GetExtension(Tiem.Filename);
-                            var file = new FileFlash
-                            {
-                                Enable = true,
-                                FileName = Tiem.Filename,
-                                FilePath = filename
-                            };
-
-                            if (Extension == ".lz4")
-                            {
-                                try
-                                {
-                                    file.RawSize = odin.GetTarEntryFlashBytes(filename, Tiem.Filename);
-                                }
-                                catch
-                                {
-                                    file.RawSize = odin.CalculateLz4SizeFromTar(filename, Tiem.Filename);
-                                }
-                                if (file.RawSize <= 0)
-                                    continue;
-                            }
-                            else
-                            {
-                                try
-                                {
-                                    file.RawSize = odin.GetTarEntryFlashBytes(filename, Tiem.Filename);
-                                }
-                                catch
-                                {
-                                    file.RawSize = Tiem.Filesize;
-                                }
-                            }
-                            FlashFile.Add(file);
+                            file.RawSize = odin.GetTarEntryFlashBytes(tarPath, Tiem.Filename);
+                        }
+                        catch
+                        {
+                            file.RawSize = odin.CalculateLz4SizeFromTar(tarPath, Tiem.Filename);
+                        }
+                        if (file.RawSize <= 0)
+                            continue;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            file.RawSize = odin.GetTarEntryFlashBytes(tarPath, Tiem.Filename);
+                        }
+                        catch
+                        {
+                            file.RawSize = Tiem.Filesize;
                         }
                     }
-                    if (CmbBxListFile.Items.Count > 0)
-                    {
-                        BtnClear.Visibility = Visibility.Visible;
-                        txtSelectTeam.Text = filename;
-                    }
-                    view.Refresh();
-
+                    FlashFile.Add(file);
                 }
-
             }
+
+            if (CmbBxListFile.Items.Count <= 0)
+                return false;
+
+            BtnClear.Visibility = Visibility.Visible;
+            txtSelectTeam.Text = tarPath;
+            view.Refresh();
+            return true;
+        }
+
+        public void ClearPackage()
+        {
+            FlashFile.Clear();
+            view.Refresh();
+            txtSelectTeam.Text = PackageSlot;
+            BtnClear.Visibility = Visibility.Collapsed;
         }
 
         private void BtnClear_Click(object sender, RoutedEventArgs e)
         {
-            FlashFile.Clear();
-            view.Refresh();
-            // Volver al texto corto del slot al limpiar
-            txtSelectTeam.Text = PackageSlot;
-            BtnClear.Visibility = Visibility.Collapsed;
-
+            ClearPackage();
         }
 
         private void CmbBxListFile_SelectionChanged(object sender, SelectionChangedEventArgs e)

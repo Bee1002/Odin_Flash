@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using static OdinFlash.Protocol.util.utils;
@@ -56,6 +57,147 @@ namespace Odin_Flash.Controls
             TxtBxPit.IsEnabled = !IsEnable;
             BtnClearPit.IsEnabled = !IsEnable;
             BtnChoosePit.IsEnabled = !IsEnable;
+            AllowDrop = !IsEnable;
+        }
+
+        private void Flash_DragOver(object sender, DragEventArgs e)
+        {
+            if (!BLPackage.IsEnabled)
+            {
+                e.Effects = DragDropEffects.None;
+                e.Handled = true;
+                return;
+            }
+
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                e.Effects = DragDropEffects.None;
+                e.Handled = true;
+                return;
+            }
+
+            var paths = (string[])e.Data.GetData(DataFormats.FileDrop);
+            e.Effects = paths != null && paths.Any(p => CollectFirmwarePathsFromDropEntry(p).Any())
+                ? DragDropEffects.Copy
+                : DragDropEffects.None;
+            e.Handled = true;
+        }
+
+        private void Flash_Drop(object sender, DragEventArgs e)
+        {
+            if (!BLPackage.IsEnabled || !e.Data.GetDataPresent(DataFormats.FileDrop))
+                return;
+
+            var dropped = (string[])e.Data.GetData(DataFormats.FileDrop);
+            if (dropped == null || dropped.Length == 0)
+                return;
+
+            var firmwarePaths = FirmwarePackageClassifier
+                .SelectPreferredPathPerSlot(
+                    dropped.SelectMany(CollectFirmwarePathsFromDropEntry))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (firmwarePaths.Count == 0)
+            {
+                Log?.Invoke("No firmware .tar / .tar.md5 found in drop", MsgType.Message, true);
+                return;
+            }
+
+            var assigned = 0;
+            var skipped = new List<string>();
+            var slotTaken = new HashSet<FirmwarePackageSlot>();
+
+            foreach (var path in firmwarePaths)
+            {
+                var slot = FirmwarePackageClassifier.Classify(path);
+                if (slot == FirmwarePackageSlot.Unknown)
+                {
+                    skipped.Add(Path.GetFileName(path));
+                    continue;
+                }
+
+                if (slotTaken.Contains(slot))
+                {
+                    Log?.Invoke($"Replacing {slot} package : ", MsgType.Message);
+                    Log?.Invoke(Path.GetFileName(path), MsgType.Result);
+                }
+
+                var field = GetFieldForSlot(slot);
+                if (field == null || !field.TryLoadTarPackage(path))
+                {
+                    skipped.Add(Path.GetFileName(path));
+                    continue;
+                }
+
+                slotTaken.Add(slot);
+                assigned++;
+            }
+
+            if (assigned == 0)
+                Log?.Invoke("Could not assign dropped files to BL/AP/CP/CSC slots", MsgType.Message, true);
+            else if (skipped.Count > 0)
+                Log?.Invoke($"Skipped {skipped.Count} unrecognized file(s)", MsgType.Message);
+
+            e.Handled = true;
+        }
+
+        private static IEnumerable<string> CollectFirmwarePathsFromDropEntry(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                yield break;
+
+            if (Directory.Exists(path))
+            {
+                List<string> files;
+                try
+                {
+                    files = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
+                        .Where(FirmwarePackageClassifier.IsFirmwareArchive)
+                        .ToList();
+                }
+                catch
+                {
+                    yield break;
+                }
+
+                if (files.Count == 0)
+                    yield break;
+
+                // Una carpeta suelta (BL/AP/CP/CSC) con un solo TAR → ese archivo.
+                if (files.Count == 1)
+                {
+                    yield return files[0];
+                    yield break;
+                }
+
+                // Carpeta con varios TAR: un archivo por slot (CSC_ gana sobre HOME_CSC_).
+                foreach (var file in FirmwarePackageClassifier.SelectPreferredPathPerSlot(files))
+                    yield return file;
+
+                yield break;
+            }
+
+            if (FirmwarePackageClassifier.IsFirmwareArchive(path))
+                yield return path;
+        }
+
+        private FlashField GetFieldForSlot(FirmwarePackageSlot slot)
+        {
+            switch (slot)
+            {
+                case FirmwarePackageSlot.BL:
+                    return BLPackage;
+                case FirmwarePackageSlot.AP:
+                    return APPackage;
+                case FirmwarePackageSlot.CP:
+                    return CPPackage;
+                case FirmwarePackageSlot.CSC:
+                    return CSCPackage;
+                default:
+                    return null;
+            }
         }
 
         private void Odin_Log(string Text, MsgType Color, bool IsError = false)
@@ -175,7 +317,7 @@ namespace Odin_Flash.Controls
             }
 
             await Odin.PrintInfo();
-            LokePerformanceSettings.ApplyHighCapaRuntimeProfile(Odin.LastReportedCapa);
+            LokePerformanceSettings.ApplyCapaRuntimeProfile(Odin.LastReportedCapa);
             Log?.Invoke("Checking Download Mode : ", MsgType.Message);
             if (!await Odin.IsOdin())
             {
@@ -368,6 +510,7 @@ namespace Odin_Flash.Controls
 
                 IsRunning?.Invoke(true, "ReadPit");
                 await Odin.PrintInfo();
+                LokePerformanceSettings.ApplyCapaRuntimeProfile(Odin.LastReportedCapa);
                 Log?.Invoke("Checking Download Mode : ", MsgType.Message);
                 if (!await Odin.IsOdin())
                 {

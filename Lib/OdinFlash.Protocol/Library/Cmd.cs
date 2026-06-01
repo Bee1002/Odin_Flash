@@ -121,7 +121,12 @@ namespace OdinFlash.Protocol
 
             if (LokeVariant == 3L || LokeVariant == 4L || LokeVariant == 5L)
             {
-                command = new SamsungLokeCommand(0x64, 5, 1048576L);
+                int packetBytes = Odin.LokeSessionPacketBytes;
+                if (packetBytes < 4096)
+                    packetBytes = 1048576;
+                if (packetBytes > 1048576)
+                    packetBytes = 1048576;
+                command = new SamsungLokeCommand(0x64, 5, packetBytes);
                 await LOKE_SendCMD(device, command);
             }
 

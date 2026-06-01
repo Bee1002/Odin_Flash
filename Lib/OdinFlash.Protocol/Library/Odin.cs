@@ -59,6 +59,9 @@ namespace OdinFlash.Protocol
         /// <summary>Mínimo ms tras cada trozo antes del ACK 8 B en equipos de alta Capa.</summary>
         public static int FlashAckDelayMsHighCapaMin { get; set; } = 3;
 
+        /// <summary>Paquete NAND y LOKE 0x64/5; fijado por <see cref="LokePerformanceSettings.ApplyCapaRuntimeProfile"/> tras DVIF.</summary>
+        public static int LokeSessionPacketBytes { get; set; } = 1048576;
+
         int? _lastReportedCapa;
         long _batchTotalBytes;
         long _batchCompletedBefore;
@@ -694,10 +697,7 @@ namespace OdinFlash.Protocol
                 await Device.DiscardInBufferAsync();
             }
             int sent = 0;
-            // Capa >= 128: paquete/delay desde App.config. Capa baja (ej. G950F=64): FlashChunkBytes 1 MiB sin delay Capa.
-            int packet = FlashChunkBytes;
-            if (_lastReportedCapa is int cap && cap >= NandSmallPacketCapaThreshold)
-                packet = Math.Min(packet, NandPacketBytesWhenHighCapa);
+            int packet = LokeSessionPacketBytes;
             if (packet < 4096)
                 packet = 4096;
             if (packet > 1048576)
@@ -720,7 +720,6 @@ namespace OdinFlash.Protocol
                 addProgressAction(toRead);
             }
             command = new SamsungLokeCommand(102, 3, entry.MbinaryType, sessionLength);
-            //await LOKE_SendCMD(command);
             if (entry.MbinaryType == 1L)
             {
                 SamsungLokeCommand samsungLokeCommand = command.Clone();
@@ -903,7 +902,7 @@ namespace OdinFlash.Protocol
                     await Task.Delay(InterPartitionDelayMs);
                 if (DiscardSerialRxBetweenPartitions)
                 {
-                    try { await Device.DiscardInBufferAsync(); } catch { }
+                    try { await Device.DiscardSerialBuffersAsync(); } catch { }
                 }
             }
 
@@ -1134,6 +1133,10 @@ namespace OdinFlash.Protocol
                             }
                             PitStream.Write(array2, 0, num5);
                         }
+
+                        try { await Device.DiscardInBufferAsync(); } catch { }
+                        var endPitCmd = new SamsungLokeCommand(0x65, 3);
+                        await this.cmd.LOKE_SendCMD(Device, endPitCmd);
                     }
                     byte[] sData = PitStream.ToArray();
                     Result.data = sData;
