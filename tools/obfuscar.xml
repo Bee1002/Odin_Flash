@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ofusca Odin_Flash.exe del publish (Costura embebe OdinFlash.Protocol).
+  Rutas InPath/OutPath las sustituye Obfuscate-Publish.ps1 en cada ejecución.
+
+  Estrategia WPF-safe:
+  - KeepPublicApi: conserva tipos públicos referenciados por XAML.
+  - HidePrivateApi + HideStrings: ofusca lógica LOKE/flash internal/private.
+-->
+<Obfuscator>
+  <Var name="InPath" value="IN_PATH_PLACEHOLDER" />
+  <Var name="OutPath" value="OUT_PATH_PLACEHOLDER" />
+
+  <Var name="KeepPublicApi" value="true" />
+  <Var name="HidePrivateApi" value="true" />
+  <Var name="HideStrings" value="true" />
+  <Var name="RenameProperties" value="false" />
+  <Var name="RenameFields" value="false" />
+  <Var name="RenameEvents" value="false" />
+  <Var name="UseUnicodeNames" value="true" />
+  <Var name="OptimizeMethods" value="true" />
+  <Var name="SuppressIldasm" value="true" />
+
+  <AssemblySearchPath path="REFERENCE_ASSEMBLIES_PLACEHOLDER" />
+  <AssemblySearchPath path="$(InPath)" />
+
+  <Module file="$(InPath)\Odin_Flash.exe">
+    <SkipNamespace name="Odin_Flash.Properties" />
+  </Module>
+</Obfuscator>

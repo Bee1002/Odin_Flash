@@ -144,6 +144,8 @@
                             <RichTextBox x:Name="RichLog"
                                          Grid.Row="1"
                                          TextChanged="RichLog_TextChanged"
+                                         PreviewMouseLeftButtonDown="RichLog_PreviewMouseLeftButtonDown"
+                                         PreviewMouseMove="RichLog_PreviewMouseMove"
                                          VerticalAlignment="Stretch"
                                          VerticalContentAlignment="Top"
                                          Background="Transparent"

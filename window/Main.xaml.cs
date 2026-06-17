@@ -23,6 +23,9 @@ namespace Odin_Flash.window
         private readonly DispatcherTimer DeviceStatusTimer;
         private bool IsCheckingDeviceStatus;
         private bool IsRunningOperation;
+
+        static readonly SolidColorBrush SamFwLinkBrush =
+            new SolidColorBrush(Color.FromRgb(0x64, 0xB5, 0xF6));
         private string LastDetectedComLabel;
         private DateTime LastTransferSampleUtc;
         private long LastTransferWrittenBytes;
@@ -44,6 +47,7 @@ namespace Odin_Flash.window
         public Main()
         {
             InitializeComponent();
+            AppIconHelper.ApplyTo(this);
 
             ProgressThrottleMs = LokePerformanceSettings.ProgressThrottleMs;
 
@@ -342,7 +346,7 @@ namespace Odin_Flash.window
             RichLog.ScrollToEnd();
         }
 
-        private void Flash_Log(string Text, MsgType Color, bool IsError = false)
+        private void Flash_Log(string Text, MsgType Color, bool IsError = false, string navigateUri = null)
         {
             if (string.IsNullOrEmpty(Text))
                 return;
@@ -352,19 +356,46 @@ namespace Odin_Flash.window
                 UpdateDeviceStatusFromLog(Text, IsError);
 
                 var paragraph = new Paragraph { Margin = new Thickness(0) };
-                var run = new Run(Text) { FontSize = 10.5 };
 
-                if (IsError)
-                    run.Foreground = Brushes.YellowGreen;
-                else if (Color == MsgType.Result)
+                if (!IsError
+                    && Color == MsgType.Result
+                    && !string.IsNullOrWhiteSpace(navigateUri)
+                    && Uri.TryCreate(navigateUri, UriKind.Absolute, out var uri))
                 {
-                    run.Foreground = Brushes.Cyan;
-                    run.FontWeight = FontWeights.Bold;
+                    var run = new Run(Text)
+                    {
+                        FontSize = 10.5,
+                        FontWeight = FontWeights.Bold,
+                        Foreground = SamFwLinkBrush
+                    };
+                    var link = new Hyperlink(run)
+                    {
+                        NavigateUri = uri,
+                        TextDecorations = TextDecorations.Underline,
+                        Foreground = SamFwLinkBrush
+                    };
+                    link.Click += LogHyperlink_Click;
+                    ToolTipService.SetToolTip(link, $"Abrir firmware en SamFW\n{uri}");
+                    ToolTipService.SetInitialShowDelay(link, 150);
+                    paragraph.Inlines.Add(link);
                 }
                 else
-                    run.Foreground = (SolidColorBrush)new BrushConverter().ConvertFrom("#A0A0A0");
+                {
+                    var run = new Run(Text) { FontSize = 10.5 };
 
-                paragraph.Inlines.Add(run);
+                    if (IsError)
+                        run.Foreground = Brushes.YellowGreen;
+                    else if (Color == MsgType.Result)
+                    {
+                        run.Foreground = Brushes.Cyan;
+                        run.FontWeight = FontWeights.Bold;
+                    }
+                    else
+                        run.Foreground = (SolidColorBrush)new BrushConverter().ConvertFrom("#A0A0A0");
+
+                    paragraph.Inlines.Add(run);
+                }
+
                 RichLog.Document.Blocks.Add(paragraph);
                 RichLog.ScrollToEnd();
             });
@@ -433,6 +464,63 @@ namespace Odin_Flash.window
                 : Visibility.Visible;
         }
 
+        private void RichLog_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (TryOpenLogHyperlink(e.GetPosition(RichLog)))
+                e.Handled = true;
+        }
+
+        private void RichLog_PreviewMouseMove(object sender, MouseEventArgs e)
+        {
+            RichLog.Cursor = FindLogHyperlink(e.GetPosition(RichLog)) != null
+                ? Cursors.Hand
+                : null;
+        }
+
+        private void LogHyperlink_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Hyperlink link && link.NavigateUri != null)
+            {
+                OpenExternalUri(link.NavigateUri);
+                e.Handled = true;
+            }
+        }
+
+        private bool TryOpenLogHyperlink(Point point)
+        {
+            var link = FindLogHyperlink(point);
+            if (link?.NavigateUri == null)
+                return false;
+
+            OpenExternalUri(link.NavigateUri);
+            return true;
+        }
+
+        private Hyperlink FindLogHyperlink(Point point)
+        {
+            var position = RichLog.GetPositionFromPoint(point, true);
+            if (position == null)
+                return null;
+
+            var element = position.Parent as TextElement;
+            while (element != null)
+            {
+                if (element is Hyperlink hyperlink)
+                    return hyperlink;
+                element = element.Parent as TextElement;
+            }
+
+            return null;
+        }
+
+        private static void OpenExternalUri(Uri uri)
+        {
+            if (uri == null)
+                return;
+
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        }
+
         private void BtnClearRich_Click(object sender, RoutedEventArgs e)
         {
             RichLog.Document.Blocks.Clear();
@@ -455,7 +543,7 @@ namespace Odin_Flash.window
 
         private void PhonePartsLink_RequestNavigate(object sender, RequestNavigateEventArgs e)
         {
-            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+            OpenExternalUri(e.Uri);
             e.Handled = true;
         }
 

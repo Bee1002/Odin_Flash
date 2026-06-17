@@ -200,9 +200,19 @@ namespace Odin_Flash.Controls
             }
         }
 
-        private void Odin_Log(string Text, MsgType Color, bool IsError = false)
+        private void Odin_Log(string Text, MsgType Color, bool IsError = false, string navigateUri = null)
         {
-            Log?.Invoke(Text, Color, IsError);
+            if (string.IsNullOrEmpty(navigateUri)
+                && Color == MsgType.Result
+                && !IsError
+                && !string.IsNullOrEmpty(Odin.DeviceBuildNumber)
+                && string.Equals(Text?.Trim(), Odin.DeviceBuildNumber, StringComparison.OrdinalIgnoreCase))
+            {
+                navigateUri = SamFwLinkBuilder.BuildFirmwareUrl(
+                    Odin.DeviceModel, Odin.DeviceSalesCode, Odin.DeviceBuildNumber);
+            }
+
+            Log?.Invoke(Text, Color, IsError, navigateUri);
         }
 
         private void Odin_ProgressChanged(

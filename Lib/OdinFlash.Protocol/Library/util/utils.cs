@@ -9,7 +9,7 @@ namespace OdinFlash.Protocol.util
             Result
         }
         public static bool Stop;
-        public delegate void LogDelegate(string Text,  MsgType Color ,bool IsError = false);
+        public delegate void LogDelegate(string Text, MsgType Color, bool IsError = false, string NavigateUri = null);
         public delegate void ProgressChangeDelegate(long max, long value);
         public delegate void ProgressChangedDelegate(
             string filename,

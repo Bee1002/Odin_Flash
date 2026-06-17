@@ -77,6 +77,15 @@ namespace OdinFlash.Protocol
         /// <summary>Última «Capa» leída en <see cref="PrintInfo"/> (DVIF) en esta sesión.</summary>
         public int? LastReportedCapa => _lastReportedCapa;
 
+        /// <summary>Modelo DVIF (ej. SM-A326B) tras <see cref="PrintInfo"/>.</summary>
+        public string DeviceModel { get; private set; }
+
+        /// <summary>Sales Code / CSC activo (ej. AMO) tras <see cref="PrintInfo"/>.</summary>
+        public string DeviceSalesCode { get; private set; }
+
+        /// <summary>Build / PDA (ej. A326BXXS4CWA3) tras <see cref="PrintInfo"/>.</summary>
+        public string DeviceBuildNumber { get; private set; }
+
         public Cmd cmd = new Cmd();
         public device Device = new device();
         public Tar tar = new Tar();
@@ -353,8 +362,11 @@ namespace OdinFlash.Protocol
         public async Task PrintInfo()
         {
             _lastReportedCapa = null;
+            DeviceModel = null;
+            DeviceSalesCode = null;
+            DeviceBuildNumber = null;
             var info = await DVIF();
-            LogDeviceInfoField(info, "model", "Model Number: ");
+            LogDeviceInfoField(info, "model", "Model Number: ", v => DeviceModel = v?.Trim());
             LogDeviceInfoField(info, "un", "Unique Id: ");
             LogDeviceInfoField(info, "capa", "Capa Number: ", value =>
             {
@@ -365,8 +377,8 @@ namespace OdinFlash.Protocol
             LogDeviceInfoField(info, "fwver", "Firmware Version: ");
             LogDeviceInfoField(info, "product", "Product Id: ");
             LogDeviceInfoField(info, "prov", "Provision: ");
-            LogDeviceInfoField(info, "sales", "Sales Code: ");
-            LogDeviceInfoField(info, "ver", "Build Number: ");
+            LogDeviceInfoField(info, "sales", "Sales Code: ", v => DeviceSalesCode = v?.Trim());
+            LogDeviceInfoField(info, "ver", "Build Number: ", v => DeviceBuildNumber = v?.Trim());
             LogDeviceInfoField(info, "did", "did Number: ");
             LogDeviceInfoField(info, "tmu_temp", "Tmu Number: ");
         }
@@ -382,9 +394,9 @@ namespace OdinFlash.Protocol
                 if (!string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                onLogged?.Invoke(item.Value);
                 Log?.Invoke(label, MsgType.Message);
                 Log?.Invoke(item.Value, MsgType.Result);
-                onLogged?.Invoke(item.Value);
                 return;
             }
         }
@@ -415,12 +427,18 @@ namespace OdinFlash.Protocol
         {
             try
             {
+                // Breve pausa tras lectura PIT / flash antes de cerrar sesión LOKE (103).
+                await Task.Delay(300);
                 SamsungLokeCommand cmd2 = new SamsungLokeCommand(103);
-                await cmd.LOKE_SendCMD(this.Device,cmd2);
+                await cmd.LOKE_SendCMD(this.Device, cmd2);
                 cmd2.SeqCmd = 1;
                 await cmd.LOKE_SendCMD(this.Device, cmd2);
             }
-            catch { }
+            catch
+            {
+                return false;
+            }
+
             var watch = new Stopwatch();
             try
             {
@@ -428,15 +446,14 @@ namespace OdinFlash.Protocol
                 do
                 {
                     if (!Device.Port.IsOpen)
-                    {
                         return true;
-                    }
                 } while (watch.ElapsedMilliseconds < 60000);
             }
             finally
             {
                 watch.Stop();
             }
+
             return !Device.Port.IsOpen;
         }
 
@@ -1133,10 +1150,6 @@ namespace OdinFlash.Protocol
                             }
                             PitStream.Write(array2, 0, num5);
                         }
-
-                        try { await Device.DiscardInBufferAsync(); } catch { }
-                        var endPitCmd = new SamsungLokeCommand(0x65, 3);
-                        await this.cmd.LOKE_SendCMD(Device, endPitCmd);
                     }
                     byte[] sData = PitStream.ToArray();
                     Result.data = sData;
