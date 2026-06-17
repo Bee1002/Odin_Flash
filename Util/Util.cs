@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 
 namespace Odin_Flash.Util
 {
@@ -16,6 +17,16 @@ namespace Odin_Flash.Util
 
         public static string MyPath =>
             Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+
+        /// <summary>Versión de la aplicación (desde AssemblyInfo, ej. 1.0.1).</summary>
+        public static string AppVersion
+        {
+            get
+            {
+                var v = Assembly.GetExecutingAssembly().GetName().Version;
+                return v == null ? "1.0.1" : $"{v.Major}.{v.Minor}.{v.Build}";
+            }
+        }
 
         public static void CreatFolder(string name)
         {

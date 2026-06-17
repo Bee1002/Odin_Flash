@@ -321,9 +321,9 @@ namespace Odin_Flash.window
             Application.Current.Dispatcher.Invoke(() =>
             {
                 FinalizeProgressUiOnSuccess(LastBatchTotalBytes, elapsed);
-                AppendCompletedLog("All Tasks Is Completed", elapsed);
+                AppendCompletedLog("All tasks completed", elapsed);
 
-                Events.Text = "All Tasks Is Completed";
+                Events.Text = "All tasks completed";
                 Events.Foreground = Brushes.White;
             });
         }
@@ -550,7 +550,7 @@ namespace Odin_Flash.window
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
             RichLog.Document.Blocks.Clear();
-            Flash_Log("Odin Flash 1.0.1", MsgType.Message);
+            Flash_Log($"Odin Flash {Util.Util.AppVersion}", MsgType.Message);
             Flash_Log("------------------------------------", MsgType.Message);
         }
     }

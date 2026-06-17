@@ -287,7 +287,7 @@ namespace Odin_Flash.Controls
                 }
                 else
                 {
-                    Log?.Invoke($"File Curreped : {pitname}", MsgType.Message, true);
+                    Log?.Invoke($"File corrupted : {pitname}", MsgType.Message, true);
                     return;
                 }
             }
@@ -296,7 +296,7 @@ namespace Odin_Flash.Controls
                 var pit = await Odin.tar.ExtractFileFromTar(path, pitname);
                 if (pit.Length == 0 || !Odin.PitTool.UNPACK_PIT(pit))
                 {
-                    Log?.Invoke($"File Curreped : {pitname}", MsgType.Message, true);
+                    Log?.Invoke($"File corrupted : {pitname}", MsgType.Message, true);
                     return;
                 }
 
@@ -425,11 +425,6 @@ namespace Odin_Flash.Controls
             return false;
         }
 
-        private void LogGoodJob()
-        {
-            Log?.Invoke("\n Good Job Boy 👍", MsgType.Result);
-        }
-
         public async void BtnFlash_Click(object sender, RoutedEventArgs e)
         {
             var flashStopwatch = Stopwatch.StartNew();
@@ -475,10 +470,7 @@ namespace Odin_Flash.Controls
                     Log?.Invoke("Please Select Firmware Package and try again", MsgType.Message);
 
                 if (flashSucceeded)
-                {
                     FlashCompleted?.Invoke(flashStopwatch.Elapsed);
-                    LogGoodJob();
-                }
             }
             catch (Exception ee)
             {

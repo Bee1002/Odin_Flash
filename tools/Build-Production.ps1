@@ -13,7 +13,14 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
-$version = '1.0.1'
+$assemblyInfoPath = Join-Path $root 'Properties\AssemblyInfo.cs'
+$assemblyInfoText = Get-Content $assemblyInfoPath -Raw
+if ($assemblyInfoText -match 'AssemblyVersion\("([^"]+)"\)') {
+    $version = $matches[1] -replace '\.0$', ''
+} else {
+    $version = '1.0.1'
+}
+
 $publishPath = Join-Path $root 'publish\release'
 
 $iconScript = Join-Path $root 'tools\Convert-PngToIcon.ps1'

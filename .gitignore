@@ -364,3 +364,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Icon audit / comparison artifacts (debug only)
+Assets/_audit/
+Assets/_compare/
